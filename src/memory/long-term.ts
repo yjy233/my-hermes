@@ -1,4 +1,4 @@
-/** Bounded curated Markdown, isolated by a hashed user scope. */
+/** 有大小上限的精简 Markdown 记忆，按用户 scope 的哈希值隔离。 */
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';

@@ -1,4 +1,4 @@
-/** Progressive disclosure: metadata now, bounded Markdown only when requested. */
+/** 渐进加载：先提供元数据，收到请求后才读取有大小上限的 Markdown 正文。 */
 import { existsSync, lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { assertSafeFile, readBoundedFile } from '../memory/files.js';

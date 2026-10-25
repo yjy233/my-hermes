@@ -21,7 +21,8 @@ test('complete transcripts survive restart with tool links and a fixed prompt', 
   store.setSystemPrompt(session.id, 'cannot replace it');
   const transcript: Message[] = [
     { role: 'user', content: '计算 1+1' },
-    { role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'sum', arguments: { a: 1, b: 1 } }] },
+    { role: 'assistant', content: '', reasoningContent: 'Preserve this provider reasoning across restart.',
+      toolCalls: [{ id: 'call-1', name: 'sum', arguments: { a: 1, b: 1 } }] },
     { role: 'tool', content: '{"ok":true,"result":2}', toolCallId: 'call-1' },
     { role: 'assistant', content: '2' },
   ];
@@ -64,6 +65,10 @@ test('append rejects invalid turns before partially persisting them', t => {
     { role: 'user', content: 'valid prefix' },
     { role: 'invalid', content: 'bad role' } as unknown as Message,
   ]), /Invalid stored message/);
+  assert.deepEqual(store.loadMessages(session.id), []);
+  assert.throws(() => store.appendMessages(session.id, [{
+    role: 'assistant', content: 'bad reasoning metadata', reasoningContent: 7,
+  } as unknown as Message]), /Invalid stored reasoning content/);
   assert.deepEqual(store.loadMessages(session.id), []);
   assert.throws(() => store.appendMessages(session.id, [{
     role: 'assistant', content: '',

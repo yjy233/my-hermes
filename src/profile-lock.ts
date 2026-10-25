@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-/** Portable profile ownership: atomic mkdir, never guess whether a PID can be reclaimed. */
+/** 通过原子 mkdir 实现跨平台的 profile 占用检查，不推测是否可以回收某个 PID。 */
 export class ProfileLock {
   readonly home: string;
   readonly path: string;

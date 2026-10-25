@@ -65,7 +65,7 @@ function abortableWait(promise: Promise<void>, signal?: AbortSignal): Promise<vo
   });
 }
 
-/** One owning process per profile. Completed-event caching is not exactly-once side effects. */
+/** 每个 profile 由一个进程独占；完成事件缓存不保证副作用只执行一次。 */
 export class Gateway {
   readonly allowedUsers: ReadonlySet<string> | undefined;
   private readonly db: DatabaseSync;

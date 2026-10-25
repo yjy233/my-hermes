@@ -4,7 +4,7 @@ export function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new DOMException('Operation aborted', 'AbortError');
 }
 
-/** Stop waiting promptly; handlers must also observe their signal to stop side effects. */
+/** 取消时及时停止等待；处理器也需要响应 signal，才能停止实际执行和后续副作用。 */
 export function abortable<T>(work: PromiseLike<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return Promise.resolve(work);
   if (signal.aborted) { void Promise.resolve(work).catch(() => {}); return Promise.reject(abortReason(signal)); }
@@ -30,7 +30,7 @@ export async function withTimeout<T>(
   finally { clearTimeout(timer); }
 }
 
-/** Queue only pending work; release idle keys and allow callers to cancel while waiting. */
+/** 按键串行排队，空闲后释放对应键；调用方可以在等待期间取消任务。 */
 export class KeyedMutex {
   private readonly tails = new Map<string, Promise<void>>();
   async run<T>(key: string, task: () => Promise<T>, signal?: AbortSignal): Promise<T> {

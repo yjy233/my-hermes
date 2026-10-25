@@ -1,4 +1,4 @@
-/** Small local-file primitives. These checks are not an OS-level sandbox. */
+/** 本地文件读写的基础操作；这些检查不构成操作系统级沙箱。 */
 import {
   closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync,
   openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync,

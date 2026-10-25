@@ -1,31 +1,68 @@
 # 分阶段学习与实现
 
-先看 [架构](01-architecture.md)，再实现 `src/learning/exercises.ts` 中的五个函数。外围基础设施已经实现，完整答案在同目录的 `reference.ts`，建议自己实现后再对照。
+读完 [架构](01-architecture.md)，从 `src/core/providers/kimi.ts` 的模型连接练习 L0 开始，再实现 `src/learning/exercises.ts` 的五个算法 L1～L5。外围基础设施已经实现，参考答案分别在 `kimi-reference.ts` 与 `learning/reference.ts`，建议自己实现后再对照。
 
 ```sh
 npm install
 npm run build
 npm run check -- --all --mode reference
-npm run dev -- check --stage 1 --mode learner
+npm run dev -- check --stage 0 --mode learner
 ```
 
-前三条应成功，最后一条在未完成练习时报告 L1。`learner` 不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
+前三条应成功；最后一条在未完成练习时输出 failed case，错误指出 L0。`learner` 不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
 
 `check/demo` 的 mode 优先级为命令行 `--mode` → 所选 profile 的 `config.json` → 默认 `reference`。profile 由 `--home` 或 `MY_HERMES_HOME` 选择。检查只读取配置，运行数据放临时目录，不初始化日常 profile，不调用其真实模型，也不加载其插件。
 
 ## 阶段总览
 
-| 阶段 | 目标 | 学习者修改 | 独立验收 |
-| --- | --- | --- | --- |
-| 1 Core | 模型 → 工具 → 观察 → 最终答复 | L1 `runLoop` | `check --stage 1 --mode learner` |
-| 2 Memory | 上下文预算、长期记忆、历史召回 | L2 `compactHistory`、L3 `selectMemories` | `check --stage 2 --mode learner` |
-| 3 Gateway | 路由隔离、同会话顺序、事件去重 | L4 `sessionKey` | `check --stage 3 --mode learner` |
-| 4 Extensions | Skill 渐进加载、可信 Plugin | 没有必填算法，扩展自己的实例 | `check --stage 4 --mode learner` |
-| 5 Evolution | 成功轨迹 → 候选 → 审核 → Skill | L5 `reflect` | `check --stage 5 --mode learner` |
+| 阶段 | 学习者修改 | 推荐断点 | 可测验收 | 独立命令 |
+| --- | --- | --- | --- | --- |
+| 0 Kimi Provider | L0 `KimiProvider.complete` | `src/core/providers/kimi.ts`、`src/core/models.ts` | mock HTTP 请求、文本/工具/推理字段往返、错误与取消 | `check --stage 0 --mode learner` |
+| 1 Core | L1 `runLoop` | `src/learning/exercises.ts`、`src/core/tools.ts` | 最终文本、工具结果与 ID 配对、循环预算及非法响应处理 | `check --stage 1 --mode learner` |
+| 2 Memory | L2 `compactHistory`、L3 `selectMemories` | `src/learning/exercises.ts`、`src/memory/store.ts` | 完整轮次预算、不修改输入、排序与条数限制、记忆隔离 | `check --stage 2 --mode learner` |
+| 3 Gateway | L4 `sessionKey` | `src/learning/exercises.ts`、`src/gateway/router.ts` | 三维路由稳定无碰撞、同事件只执行一次、用户隔离 | `check --stage 3 --mode learner` |
+| 4 Extensions | 无必填算法；扩展自己的实例 | `src/skills/catalog.ts`、`src/plugins/manager.ts` | 内置 Skill 按需读取、测试插件注册/执行与扩展边界 | `check --stage 4 --mode learner` |
+| 5 Evolution | L5 `reflect` | `src/learning/exercises.ts`、`src/evolution/manager.ts` | 成功轨迹生成候选，纯聊天/失败/未完成轨迹不生成，批准后才可发现 | `check --stage 5 --mode learner` |
 
-表中命令加前缀 `npm run dev --`。阶段检查直接调用当前算法，可以先做阶段 2、3 或 5；阶段 4 在练习未完成时也能通过。
+表中命令加前缀 `npm run dev --`。阶段检查调用选中 mode 的真实算法，每个具名 case 检查一个成功或边界契约；阶段 0 直接验收 Kimi Provider，阶段 1～5 验收对应算法与框架。可以单独做任一阶段，不依赖其他阶段练习。阶段 4 验收提供的扩展基线，不调用五个学习算法，因此空练习也能通过；它不会自动证明你任意新增的插件正确，新增工具仍需自己的输入、输出与失败案例。
+
+## 每阶段的调试与验收循环
+
+先从阶段 0 的模型连接开始，观察参考行为，再调试自己的实现；后续把阶段数字换成 1～5：
+
+```sh
+npm run dev -- check --stage 0 --mode reference --trace
+npm run dev -- check --stage 0 --mode learner --trace
+npm run dev -- check --stage 0 --mode learner --trace --debug
+```
+
+`--stage N` 只运行该阶段的具名契约。标准输出给出该阶段 JSON：`stage/mode/status` 表示本次选择和结果，`total/passed/failed` 汇总 case 数量，`cases` 列出具名结果；失败项的 error 给出类型、消息和相关练习标识。先修复一个失败 case，再重跑同阶段，全部通过后进入下一阶段。
+
+npm 默认还会显示脚本启动信息；需要机器逐行解析 JSON 时，用 `npm run --silent dev -- check ...` 或构建后的 `node dist/cli.js check ...`。
+
+检查模式的 `--trace` 只在标准错误输出 `case.start`、`case.passed`、`case.failed` 及带 case 信息的运行事件，不创建 profile 或 traces.jsonl，也不记录原始用户正文、工具参数或记忆内容。`--debug` 额外将失败 case 的错误栈写到标准错误，便于定位代码；JSON 结果仍留在标准输出。
+
+普通检查为每个异步 case 设置 3000 ms 等待上限，避免未完成的 Promise 挂住整阶段；`--debug` 停用这层 case 计时，便于断点单步。工具和 Provider 自身的业务预算仍独立，debug 不会自动取消这些限制。同步阻塞的插件无法由 Promise 计时强制中断。
+
+使用 VS Code 时，打开“运行和调试”，选择 [launch.json](../.vscode/launch.json) 中的“Agent Lab：阶段验收（选择阶段与模式）”并按 F5；从下拉选项选择阶段 0～5 和 reference/learner，在表中推荐文件设置断点。它通过 tsx 运行同一 CLI，并启用 trace/debug，不需要先搭建另一个调试入口。
+
+随时运行全部学习阶段：
+
+```sh
+npm run dev -- check --all --mode learner
+```
+
+即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，进程退出码非零。初始练习未实现时，状态依次为 `[failed, failed, failed, failed, passed, failed]`；阶段 4 通过代表扩展基线可运行，其余失败明确保留 TODO，没有使用参考答案兜底。
 
 完整 `chat --mode learner` 需要 L4、L2、L1；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；未完成的召回算法会形成工具错误。随时切回 `--mode reference` 检查外围系统。
+
+## 阶段 0：Kimi 模型连接（L0）
+
+实现 `src/core/providers/kimi.ts` 的 `KimiProvider.complete(messages, tools, signal?)`，返回 `Promise<ModelResponse>`。先按 [Kimi 专题](07-kimi-provider.md) 实现请求、响应、工具调用、推理字段和取消；使用本机 mock 验收，不需要真实 key，也不调用在线服务。
+
+`check --stage 0 --mode learner/reference` 直接选择 Provider 实现，与真实运行时的 --provider-mode 分开。真实组合时用 `chat --provider kimi --provider-mode learner --mode reference`，可先调试自己的模型连接，Agent 的 L1～L5 使用参考算法；它们不会相互隐式切换。
+
+K3.1 Pro 的 `reasoning_content` 必须映射成内部 reasoningContent 并随完整 assistant 历史往返；最终 CLI 只显示 content，不能把推理内容拼到用户答复或 trace。检查预算、错误脱敏与工具 ID 配对，完整契约见专题。
 
 ## 阶段 1：有界 Agent Loop（L1）
 
@@ -38,7 +75,7 @@ runLoop(provider, registry, messages, maxSteps, emit, signal?): Promise<Message[
 契约：
 
 1. 输入历史只用于请求，返回本轮新产生的 assistant/tool 消息，不重复返回原始 user/system；不要原地改输入数组。
-2. `await provider.complete(context, registry.schemas(), signal)` 得到响应后，先校验，再构造 assistant 消息。使用内部 camelCase `toolCalls` 和 `toolCallId`。
+2. `await provider.complete(context, registry.schemas(), signal)` 得到响应后，先校验，再构造 assistant 消息。使用内部 camelCase `toolCalls`、`toolCallId`、`reasoningContent`；创建 assistant 消息时保留返回的推理字段，供下一次模型请求使用。
 3. 有调用时逐个 `await registry.execute(call, signal)`，把所有结果加入上下文，再请求模型。每条工具结果必须对应声明的 call ID。
 4. 无调用的最终文本结束循环。空响应、重复 ID、过多调用、超长文本和非法参数应拒绝。可复用 `core/models.ts` 的 `validateModelResponse`。
 5. 达到 `maxSteps` 仍无最终答复时抛 `StepLimitExceeded`，不能把工具结果冒充最终答复；最后一步仍请求工具时不启动新的工具副作用。共享异常在 `core/errors.ts`。
@@ -79,7 +116,7 @@ L3 `selectMemories(query, hits, limit)`：
 
 ## 阶段 4：Skills 与 Plugin
 
-先运行 `check --stage 4 --mode learner`，然后读 `src/skills/catalog.ts`、`src/plugins/manager.ts` 和 [示例插件](../examples/plugins/word-count.ts)。
+先运行 `check --stage 4 --mode learner --trace`，然后读 `src/skills/catalog.ts`、`src/plugins/manager.ts` 和 [示例插件](../examples/plugins/word-count.ts)。这一步检查内置 Skill 和验收场景中的插件；为自己新增的工具另写案例，不能仅凭基线 passed 判断其已验证。
 
 验证索引只含名称/描述，读取工具才加载 Skill 正文。复制一个 Skill，修改名称、描述和验证案例，通过 `skills list` / `skills read NAME` 检查，不要与内置名称冲突。
 
@@ -95,7 +132,7 @@ npm run dev -- chat --plugin ./examples/plugins/word-count.ts
 
 ## 阶段 5：可审核自进化（L5）
 
-实现 `reflect(transcript): string | null`。成功的工具执行、最终 assistant 文本都存在时才生成候选。纯聊天、未结束的工具调用、任意失败工具返回 null。
+实现 `reflect(transcript): string | null`。成功的工具执行、最终 assistant 文本都存在时才生成候选；工具声明与结果 ID 必须完整配对。纯聊天、未结束调用、失败或非法 JSON 结果、孤立结果、缺失结果和错误 ID 均返回 null。可从 `L5/successful-procedure`、`L5/missing-tool-result` 等具名 case 逐项检查。
 
 候选写适用场景、可复用步骤与验证方式，避免复制原始用户数据、工具参数或凭证。基础实现可只提取工具名称并生成保守流程，不需要额外模型调用。
 
@@ -114,10 +151,10 @@ npm run dev -- skills read verified-calculation
 ## 调试与毕业验收
 
 ```sh
-node --inspect-brk --import tsx src/cli.ts check --stage 1 --mode learner
+node --inspect-brk --import tsx src/cli.ts check --stage 0 --mode learner --trace --debug
 ```
 
-用 Chrome 的 Node 调试器或 VS Code 附加到该进程，打开 `src/learning/exercises.ts`。观察 messages/context/响应和 signal；Source Map 用于把执行位置映射回 TypeScript。也可在学习函数内临时加入 `debugger;`。
+用 Chrome 的 Node 调试器或 VS Code 附加到该进程，先打开 `src/core/providers/kimi.ts`，后续算法阶段打开 `src/learning/exercises.ts`。观察 messages/context/响应和 signal；Source Map 用于把执行位置映射回 TypeScript。也可在学习函数内临时加入 `debugger;`。
 
 ```sh
 npm run typecheck
@@ -126,4 +163,6 @@ npm run check -- --all --mode learner
 npm run build
 ```
 
-阶段检查是明确的小契约，不是完整正确性证明；默认测试覆盖基础设施与参考实现。完成练习后还应补充自己的边界案例，并跑通 learner 对话、记忆召回、两种连接器和候选审核闭环。
+`npm test` 覆盖基础设施与参考实现回归；`check --mode learner` 才直接验收学习者算法的具名契约。两者应分别运行，不能用测试套件通过代替 learner 检查。完成练习后还应补充自己的边界案例，并跑通 learner 对话、记忆召回、两种连接器和候选审核闭环。
+
+中断或超时不能回滚已发生的外部副作用；忽略 signal 的插件工作还可能继续。框架会传播取消并避免将其写成成功缓存，调试失败与重试时仍需检查实际结果，详见 [Gateway 边界](05-gateway.md)。

@@ -27,6 +27,7 @@ npm run dev -- chat --message '/calc (2+3)*4' --trace
 ```json
 {
   "mode": "reference",
+  "providerMode": "learner",
   "provider": "demo",
   "model": "local-model",
   "baseUrl": "http://127.0.0.1:11434/v1",
@@ -38,7 +39,7 @@ npm run dev -- chat --message '/calc (2+3)*4' --trace
 }
 ```
 
-命令行覆盖配置。修改后重启入口；已有会话仍保留原始提示快照，新会话读取最新记忆和 Skill 索引。插件配置路径相对 profile，命令行 --plugin 相对当前目录；密钥只放环境变量。
+命令行覆盖配置。mode 控制 Core 算法，providerMode 独立控制 Kimi 的 L0 实现（默认 learner）；provider 可为 demo、compatible 或 kimi。修改后重启入口；已有会话仍保留提示快照，新会话读取最新记忆和 Skill 索引。插件配置路径相对 profile，--plugin 相对当前目录；密钥只放环境变量。
 
 `check/demo` 也读取所选配置，mode 按 `--mode` → config.json → reference 决定；始终使用离线 Provider 和临时数据，不初始化日常 profile、不加载其中插件。配置为 learner 时，不带 --mode 的检查运行学习实现。
 
@@ -50,14 +51,29 @@ npm run dev -- skills list
 npm run dev -- skills read study-notes
 ```
 
-SESSION_ID 来自 sessions。`--trace` 将事件写入 profile 的 traces.jsonl，同时输出到标准错误；JSONL 回复留在标准输出。历史与长期记忆是本地明文。
+SESSION_ID 来自 sessions。chat/gateway 的 `--trace` 将事件写入 profile 的 traces.jsonl，同时输出到标准错误；JSONL 回复留在标准输出。check/demo 的 `--trace` 只输出标准错误，不写 profile。历史与长期记忆是本地明文。
 
 chat/gateway 独占 profile 的 `.runtime.lock/`。崩溃残留需确认旧进程退出后手动删除锁目录，不能假定操作系统自动释放。具体步骤见 [Gateway](05-gateway.md)。
 
 ## TypeScript 断点
 
+每个阶段先运行同一组参考与学习检查，阶段数字可为 0～5：
+
 ```sh
-node --inspect-brk --import tsx src/cli.ts check --stage 1 --mode learner
+npm run dev -- check --stage 0 --mode reference --trace
+npm run dev -- check --stage 0 --mode learner --trace --debug
+```
+
+每阶段由具名 case 检查选中学习实现的成功、失败与边界契约；阶段 0 是 Kimi Provider，本机 mock 不读取真实 key。标准输出是阶段 JSON，看失败 case 名、错误和 L0～L5 标识定位。trace 在标准错误给出 case.start、case.passed、case.failed 与带 case 信息的事件，不写 traces.jsonl，不打印用户正文或原始推理字段。debug 将错误栈另外写入标准错误，不改变结构化汇总。
+
+结果中的 stage/mode/status 指明所选阶段、算法和通过状态，total/passed/failed 是 case 计数，cases 包含具名结果与可选 error。默认异步 case 等待上限 3000 ms；--debug 会停用这层计时以便单步，工具/Provider 自身预算仍独立存在。同步阻塞不能靠 Promise 计时强制终止。
+
+VS Code 可在“运行和调试”中选 [launch.json](../.vscode/launch.json) 的“Kimi Provider：离线验收”，按 F5 选择 mode；通用“Agent Lab：阶段验收（选择阶段与模式）”可选阶段 0～5。在表中对应文件设置断点；配置使用 tsx 并启用 trace/debug。交互聊天配置固定使用离线 Demo，真实 Kimi 用下面的 CLI 命令。
+
+也可用 Node Inspector 手动启动：
+
+```sh
+node --inspect-brk --import tsx src/cli.ts check --stage 0 --mode learner --trace --debug
 node --inspect-brk --import tsx src/cli.ts chat --message '/calc (2+3)*4' --mode reference
 ```
 
@@ -65,6 +81,7 @@ node --inspect-brk --import tsx src/cli.ts chat --message '/calc (2+3)*4' --mode
 
 | 位置 | 观察什么 |
 | --- | --- |
+| `src/core/providers/kimi.ts` 的 `complete` | L0 请求、工具与推理字段、响应、错误和取消 |
 | `src/learning/exercises.ts` 的 `runLoop` | context 顺序、响应、工具结果与终止条件 |
 | `src/core/tools.ts` 的 `ToolRegistry.execute` | schema、限时、错误 envelope、AbortSignal |
 | `src/core/agent.ts` | 提示快照、预算、完整轮次持久化 |
@@ -82,14 +99,19 @@ npm run dev -- gateway --connector jsonl --allow-user learner < examples/message
 
 ## 真实模型
 
+先单独验收自己的 Kimi Provider，再让参考 Core 驱动它：
+
 ```sh
-npm run dev -- chat --provider compatible --model local-model \
-  --base-url http://127.0.0.1:11434/v1 --message '请计算 (2+3)*4' --trace
+export MOONSHOT_API_KEY='YOUR_PLATFORM_API_KEY'
+npm run dev -- chat --provider kimi --provider-mode learner --mode reference \
+  --message '请使用工具计算 (2+3)*4' --trace
 ```
 
-服务须支持 Chat Completions、function tools 与 tool 消息。base URL 包含 /v1、不包含 /chat/completions，入口追加路径；模型名称改成实际服务名称。远程凭证放在 MY_HERMES_API_KEY 或 OPENAI_API_KEY，本地服务可按需不设。
+Kimi 也接受 KIMI_API_KEY，不读取 OPENAI_API_KEY 兜底；默认国内 root 与 kimi-k3.1-pro。L0 未实现会明确失败，改 --provider-mode reference 可对照完整连接实现。--mode reference 只控制 Agent，不会替你实现 L0。显式切 --provider kimi 时重置模型/地址到 Kimi 预设，--model/--base-url 显式值优先；国际区使用对应平台 key 与 https://api.moonshot.ai/v1。
 
-Provider 使用内置 fetch 与 AbortSignal，统一转换内部 camelCase 消息和 API wire 字段，限制响应长度并隐藏远端错误正文。本仓库验收使用离线与本机协议测试，未用真实厂商凭证调用在线模型；兼容接口不保证每个服务的所有细节一致。
+K3.1 Pro 始终推理，使用 reasoning_effort=low、max_completion_tokens=8192；不发送 K2 的 thinking 开关，也不显式修改固定采样参数。reasoning_content 对应内部 reasoningContent，必须随 assistant 历史保留和回传，最终聊天只显示 content。官方依据、任务分解与限额见 [Kimi Provider](07-kimi-provider.md)。
+
+通用兼容服务仍可用 `--provider compatible --model YOUR_MODEL --base-url http://127.0.0.1:11434/v1`，其凭证读取 MY_HERMES_API_KEY 或 OPENAI_API_KEY。Provider 使用内置 fetch 和 AbortSignal，转换消息字段，限制响应并隐藏远端错误正文。本仓库只做离线与本机协议测试，未用真实凭证调用在线 Kimi。
 
 ## 验证与排查
 
@@ -100,11 +122,17 @@ npm run check -- --all --mode reference
 npm run build
 ```
 
-完成练习后再运行 `npm run check -- --all --mode learner`。阶段检查只覆盖小契约；测试覆盖基础设施和参考实现，不替代学习者自己的边界案例。
+完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。初始状态为 `[failed, failed, failed, failed, passed, failed]`，阶段 4 只代表提供的扩展基线，不能自动验证任意自定义插件。
+
+`npm test` 验证基础设施与参考实现回归；learner 检查直接调用学习者代码，两项分别验收。根据具体任务补充边界案例，不以默认测试通过代替练习完成。中断/超时能传播取消，不能回滚已发生的副作用，忽略 signal 的代码还可能继续；重试前检查实际结果。
 
 | 现象 | 首先检查 |
 | --- | --- |
-| ExerciseNotImplemented | 当前 mode 与 L1～L5，实现练习或显式切 reference |
+| ExerciseNotImplemented | 检查 L0～L5；Kimi 的 providerMode 与 Core mode 是两个独立选择 |
+| Kimi key / HTTP 401 | MOONSHOT_API_KEY/KIMI_API_KEY、区域平台、模型权限，不使用 OpenAI key 兜底 |
+| 工具第二轮丢上下文 | reasoningContent 与 toolCalls 是否完整保存、持久化并转换回 wire 字段 |
+| 单阶段 failed | 查 case 名和错误，使用同一 stage 的 --trace --debug；不必先补其他阶段 |
+| --all 同时有 passed/failed | 全部阶段独立汇总；任一 failed 仍以非零退出 |
 | ContextBudgetExceeded | system、最新完整轮、工具 schema 总预算 |
 | 工具 ok=false | error/message、参数和目标，不能当成成功事实 |
 | 同 eventId 冲突 | 是否把旧 ID 用在新正文上 |

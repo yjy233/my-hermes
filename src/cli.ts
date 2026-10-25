@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Source and compiled CLI share exactly the same execution path. */
+/** 源码入口和编译后的 CLI 使用同一条执行路径。 */
 import { appendFileSync, existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline/promises';
 import { randomUUID } from 'node:crypto';
 import { loadSettings, initializeProfile, type Settings } from './config.js';
 import { Agent } from './core/agent.js';
-import { DemoProvider, OpenAICompatibleProvider } from './core/providers.js';
+import { createProvider } from './core/provider-factory.js';
 import type { Emit } from './core/models.js';
 import { EvolutionManager } from './evolution/index.js';
 import { Gateway } from './gateway/index.js';
@@ -21,6 +21,7 @@ import { SkillCatalog } from './skills/index.js';
 function parse(argv: string[]) {
   return parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
     home: { type: 'string' }, mode: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' },
+    'provider-mode': { type: 'string' },
     'base-url': { type: 'string' }, plugin: { type: 'string', multiple: true },
     'auto-reflect': { type: 'boolean' }, 'no-auto-reflect': { type: 'boolean' },
     trace: { type: 'boolean' }, debug: { type: 'boolean' },
@@ -36,11 +37,12 @@ const HELP = `my-hermes · TypeScript Agent learning lab (Node.js 24+)
 Commands:
   init | doctor | sessions | history SESSION_ID
   chat [--message TEXT] [--session NAME] [--user ID]
-  check | demo [--stage 1..5 | --all] [--mode reference|learner]
+  check | demo [--stage 0..5 | --all] [--mode reference|learner]
   gateway --connector jsonl|http [--allow-user ID] [--host 127.0.0.1] [--port 8765]
   skills list | skills read NAME
   evolve list | evolve show ID | evolve approve ID --name NAME --description TEXT
-Common: --home PATH --mode MODE --provider demo|compatible --model NAME --base-url URL
+Common: --home PATH --mode MODE --provider demo|compatible|kimi --provider-mode learner|reference
+        --model NAME --base-url URL
         --plugin PATH (repeatable) --auto-reflect --no-auto-reflect --trace --debug
 Examples: npm run dev -- chat --message '/calc (2+3)*4' --trace
           npm run check -- --all --mode reference`;
@@ -49,6 +51,7 @@ function settingsFor(values: Parsed['values']): Settings {
   if (values['auto-reflect'] && values['no-auto-reflect']) throw new Error('Choose one auto-reflect flag');
   const settings = loadSettings(values.home, {
     mode: values.mode as Mode | undefined, provider: values.provider as Settings['provider'] | undefined,
+    providerMode: values['provider-mode'] as Mode | undefined,
     model: values.model, baseUrl: values['base-url'],
     autoReflect: values['auto-reflect'] ? true : values['no-auto-reflect'] ? false : undefined,
   });
@@ -113,11 +116,31 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
   if (command === 'check' || command === 'demo') {
     if (values.stage && values.all) throw new Error('Use --stage or --all, not both');
     const stage = Number(values.stage ?? 1);
-    if (!Number.isInteger(stage) || !STAGES[stage]) throw new Error('Stage must be 1..5');
-    for (const target of values.all ? Object.keys(STAGES).map(Number) : [stage]) {
+    if (!Number.isInteger(stage) || !STAGES[stage]) throw new Error('Stage must be 0..5');
+    let failedStages = 0;
+    let failedCases = 0;
+    const targets = values.all ? Object.keys(STAGES).map(Number) : [stage];
+    for (const target of targets) {
       signal.throwIfAborted();
-      console.log(JSON.stringify({ title: STAGES[target], ...await checkStage(target, settings.mode) }));
+      const result = await checkStage(target, settings.mode, {
+        signal, debug: values.debug,
+        emit: values.trace ? (event, payload) => console.error(JSON.stringify({ event, ...payload })) : undefined,
+      });
+      // 每个阶段向 stdout 写一条 JSON 记录，便于脚本和进度 UI 使用。
+      console.log(JSON.stringify({ title: STAGES[target], ...result, cases: result.cases.map(item => ({
+        name: item.name, status: item.status,
+        ...(item.error ? { error: { name: item.error.name, message: item.error.message } } : {}),
+      })) }));
+      if (result.status === 'failed') {
+        failedStages++;
+        failedCases += result.failed;
+        for (const item of result.cases.filter(item => item.status === 'failed')) {
+          console.error(`[stage ${target}] ${item.name}: ${item.error!.name}: ${item.error!.message}`);
+          if (values.debug && item.error?.stack) console.error(item.error.stack);
+        }
+      }
     }
+    if (failedStages) throw new Error(`Acceptance failed: ${failedStages}/${targets.length} stages, ${failedCases} cases`);
     return;
   }
   if (command === 'skills' || command === 'evolve') {
@@ -149,7 +172,10 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     if (command === 'init') { console.log(`Profile ready: ${settings.home}`); return; }
     if (command === 'doctor') {
       print({ node: process.versions.node, home: settings.home, mode: settings.mode, provider: settings.provider,
-        apiKeyConfigured: Boolean(process.env.MY_HERMES_API_KEY || process.env.OPENAI_API_KEY),
+        providerMode: settings.providerMode,
+        apiKeyConfigured: settings.provider === 'kimi'
+          ? Boolean(process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY)
+          : Boolean(process.env.MY_HERMES_API_KEY || process.env.OPENAI_API_KEY),
         skills: catalogFor(settings).skills.size, plugins: settings.plugins.map(path => ({ path, exists: existsSync(path) })) }); return;
     }
     if (command === 'sessions') { print(store.listSessions()); return; }
@@ -158,9 +184,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       if (!store.listSessions().some(session => session.id === sessionId)) throw new Error('Unknown session ID; run sessions first');
       print(store.loadMessages(sessionId)); return;
     }
-    const provider = settings.provider === 'demo' ? new DemoProvider() : new OpenAICompatibleProvider({
-      baseUrl: settings.baseUrl, model: settings.model, apiKey: process.env.MY_HERMES_API_KEY ?? process.env.OPENAI_API_KEY,
-    });
+    const provider = createProvider(settings);
     const agent = new Agent({ provider, store, memory: new LongTermMemory(resolve(settings.home, 'memory')),
       skills: catalogFor(settings), mode: settings.mode, maxSteps: settings.maxSteps, contextChars: settings.contextChars,
       turnTimeoutMs: settings.turnTimeoutMs, plugins: settings.plugins, autoReflect: settings.autoReflect,

@@ -81,7 +81,7 @@ export class Agent {
   }
 }
 
-/** Learner implementations receive the same request/response budgets as reference. */
+/** learner 与 reference 使用相同的请求和响应预算限制。 */
 export class BudgetProvider implements Provider {
   constructor(private readonly delegate: Provider, private readonly maxChars: number) {}
   async complete(messages: Message[], tools: ToolSchema[], signal?: AbortSignal) {
@@ -96,14 +96,14 @@ export class BudgetProvider implements Provider {
   }
 }
 
-/** Don't commit malformed learner results as a successful complete turn. */
+/** 校验学习者返回的消息结构，避免将不完整或非法的轮次记录为成功。 */
 export function validateTurn(delta: Message[]): void {
   if (!Array.isArray(delta) || !delta.length) throw new Error('Loop must return a completed assistant turn');
   const pending = new Set<string>();
   for (const message of delta) {
     if (message.role === 'assistant') {
       if (pending.size) throw new Error('Missing tool results before next assistant message');
-      validateModelResponse({ content: message.content, toolCalls: message.toolCalls });
+      validateModelResponse({ content: message.content, toolCalls: message.toolCalls, reasoningContent: message.reasoningContent });
       for (const call of message.toolCalls ?? []) pending.add(call.id);
     } else if (message.role === 'tool') {
       if (!message.toolCallId || !pending.delete(message.toolCallId)) throw new Error('Orphan or duplicate tool result');

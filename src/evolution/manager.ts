@@ -1,4 +1,4 @@
-/** Auditable candidate -> explicit review -> Skill, never source self-modification. */
+/** 可追溯的候选 → 显式审核 → Skill；不自动修改源码。 */
 import { randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -73,7 +73,7 @@ export class EvolutionManager {
       + `source-proposal: ${id}\nsource-session: ${JSON.stringify(proposal.sessionId)}\n---\n\n`
       + `${proposal.content.trim()}\n`;
     if (Buffer.byteLength(text) > MAX_SKILL_BYTES) throw new Error('Approved skill exceeds catalog size limit');
-    mkdirSync(directory); // Exclusive creation prevents overwriting another approved skill.
+    mkdirSync(directory); // 以独占方式创建目录，防止覆盖其他已批准的 Skill。
     const path = join(directory, 'SKILL.md');
     try {
       const descriptor = openSync(path, 'wx', 0o600);

@@ -3,7 +3,7 @@ import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 cpSync(new URL('../src/data', import.meta.url), new URL('../dist/data', import.meta.url), {
   recursive: true,
 });
-// Compiled plugins run with plain Node, including when installed under node_modules.
+// 编译后的插件可直接由 Node 运行，安装到 node_modules 中时也一样。
 const exampleDirectory = new URL('../dist/examples/plugins/', import.meta.url);
 mkdirSync(exampleDirectory, { recursive: true });
 const source = readFileSync(new URL('../examples/plugins/word-count.ts', import.meta.url), 'utf8');

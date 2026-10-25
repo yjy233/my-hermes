@@ -139,7 +139,7 @@ test('HTTP aborts in-flight Agent when client disconnects', async (t) => {
   const client = request(`${base}/message`, {
     method: 'POST', headers: { Authorization: 'Bearer secret' },
   });
-  client.on('error', () => { /* expected socket hangup after explicit disconnect */ });
+  client.on('error', () => { /* 主动断开连接后，预期会收到连接挂断错误。 */ });
   client.end(JSON.stringify(message()));
   await entered;
   client.destroy();

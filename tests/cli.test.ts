@@ -1,4 +1,4 @@
-/** Portable subprocess entry points, isolated from personal profiles and online model services. */
+/** 通过可移植的子进程调用入口，隔离个人配置目录和在线模型服务。 */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -57,13 +57,27 @@ test('CLI init, one-shot chat, trace, session/history inspection and idempotent 
   assert.equal(readFileSync(configPath, 'utf8'), custom);
 });
 
-test('CLI offline checks pass all five stages and never create a persistent profile', (t) => {
+test('CLI offline checks pass stages 0 through 5 and never create a persistent profile', (t) => {
   const { home, invoke } = fixture(t);
   const result = invoke(['check', '--all']);
   assert.equal(result.status, 0, result.stderr);
   const stages = result.stdout.trim().split('\n').map(line => JSON.parse(line));
-  assert.deepEqual(stages.map(stage => stage.stage), [1, 2, 3, 4, 5]);
+  assert.deepEqual(stages.map(stage => stage.stage), [0, 1, 2, 3, 4, 5]);
   assert.ok(stages.every(stage => stage.status === 'passed'));
+  assert.equal(existsSync(home), false);
+});
+
+test('CLI Kimi learner stage reports L0 independently of unimplemented Agent algorithms', (t) => {
+  const { home, invoke } = fixture(t);
+  const result = invoke(['check', '--stage', '0', '--mode', 'learner', '--trace']);
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout.trim());
+  assert.equal(report.stage, 0);
+  assert.equal(report.status, 'failed');
+  assert.ok(report.cases.some((item: { error?: { name: string; message: string } }) =>
+    item.error?.name === 'ExerciseNotImplemented' && item.error.message.includes('L0')));
+  assert.match(result.stderr, /L0/u);
+  assert.doesNotMatch(result.stderr, /\bL[1-5]\b/u);
   assert.equal(existsSync(home), false);
 });
 

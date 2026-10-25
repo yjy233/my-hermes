@@ -3,7 +3,7 @@ import type { SkillCatalog } from '../skills/catalog.js';
 import type { Algorithms } from '../learning/types.js';
 import { ToolRegistry, type JsonSchema } from './tools.js';
 
-/** A tiny expression parser, never eval/new Function. Complexity and magnitude are bounded. */
+/** 轻量算术表达式解析器，限制复杂度和数值范围，不执行 eval 或 new Function。 */
 export function calculate(expression: string): number {
   if (typeof expression !== 'string' || expression.length > 200) throw new Error('Expression too long');
   const tokens = expression.match(/(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|\/\/|[()+*/%\-]|[^\s]/g) ?? [];

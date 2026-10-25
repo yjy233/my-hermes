@@ -25,28 +25,39 @@ npm run dev -- chat
 
 ## 自己实现核心
 
-- `reference`：完整参考实现，先看系统如何运行。
-- `learner`：调用 [exercises.ts](src/learning/exercises.ts) 中的练习；未完成会报出 `L1`～`L5` 并失败，不会自动回退到答案。
+- Core 的 `--mode reference/learner` 选择完整算法或 [exercises.ts](src/learning/exercises.ts) 中的 L1～L5。
+- Kimi 的 `--provider-mode reference/learner` 独立选择模型连接实现；L0 在 [kimi.ts](src/core/providers/kimi.ts)，Kimi 默认使用 learner，未实现明确失败，不会回退。
 
 基础设施、参考算法与阶段验收均已提供。**有意留空的代码只有学习练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
 
 | 阶段 | 学习内容 | 自己实现 | 独立验收 |
 | --- | --- | --- | --- |
+| 0 | Kimi：真实模型请求、工具与推理字段 | L0 `KimiProvider.complete` | `npm run dev -- check --stage 0 --mode learner` |
 | 1 | Core：模型、工具、观察、终止 | L1 `runLoop` | `npm run dev -- check --stage 1 --mode learner` |
 | 2 | 短期上下文、长期记忆、历史召回 | L2 `compactHistory`、L3 `selectMemories` | `npm run dev -- check --stage 2 --mode learner` |
 | 3 | Gateway：授权、隔离、幂等 | L4 `sessionKey` | `npm run dev -- check --stage 3 --mode learner` |
 | 4 | Skills 与可信 Plugin | 添加自己的 Skill / Tool Plugin | `npm run dev -- check --stage 4 --mode learner` |
 | 5 | 自进化：成功轨迹到技能候选 | L5 `reflect` | `npm run dev -- check --stage 5 --mode learner` |
 
-`demo --stage N` 运行同一离线场景。完整 `learner` 聊天先需要 L1/L2/L4；历史召回使用 L3，自动反思使用 L5。详细契约、断点和失败案例见 [学习路径](docs/03-learning-path.md)。[reference.ts](src/learning/reference.ts) 是可选阅读的参考答案。
+`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。完整 learner Agent 需要 L1/L2/L4，召回使用 L3，反思使用 L5；也可以先用参考 Core 独立调试 L0。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
+
+每阶段先看参考，再调试自己的代码；将阶段数字换成 0～5：
+
+```bash
+npm run dev -- check --stage 0 --mode reference --trace
+npm run dev -- check --stage 0 --mode learner --trace --debug
+npm run dev -- check --all --mode learner
+```
+
+结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；初始状态为 `[failed, failed, failed, failed, passed, failed]`，不会回退到答案。`npm test` 是基础设施与 reference 回归，learner 检查单独验证学生实现。
 
 调试 TypeScript：
 
 ```bash
-node --inspect-brk --import tsx src/cli.ts check --stage 1 --mode learner
+node --inspect-brk --import tsx src/cli.ts check --stage 0 --mode learner --trace --debug
 ```
 
-随后用浏览器的 Node 调试器或 VS Code 附加调试器，在 `src/learning/exercises.ts` 设置断点。
+随后附加调试器，在 kimi.ts 设置 L0 断点，算法阶段在 exercises.ts 设置断点。VS Code 可选 [阶段调试配置](.vscode/launch.json) 中的“Kimi Provider：离线验收”，或通用配置选择 stage 0～5；按 F5 选择 mode，运行同样的 trace/debug 检查。
 
 ## 记忆与扩展
 
@@ -93,16 +104,20 @@ npm run dev -- skills list
 ## 接入真实模型
 
 ```bash
-npm run dev -- chat --provider compatible --base-url http://127.0.0.1:11434/v1 --model YOUR_MODEL
+export MOONSHOT_API_KEY='YOUR_PLATFORM_API_KEY'
+npm run dev -- chat --provider kimi --provider-mode learner --mode reference \
+  --message '请调用工具计算 (2+3)*4' --trace
 ```
 
-模型服务须支持 OpenAI-compatible Chat Completions 和 tool calling。远程服务凭证放在 `MY_HERMES_API_KEY` 或 `OPENAI_API_KEY` 环境变量中；URL 和模型名替换为实际值。示例不会自动启动模型服务。仓库验证使用离线与本机协议测试，在线模型和真实 IM 尚未联调。
+Kimi 默认国内 API root 与 kimi-k3.1-pro，另接受 KIMI_API_KEY；不回退读取 OPENAI_API_KEY。上面用参考 Core 运行自己实现的 Provider，L0 未完成会明确失败。完整对照时改为 --provider-mode reference；切国际区、参数与推理字段要求见 [Kimi 专题](docs/07-kimi-provider.md)。最终聊天只显示 content，reasoningContent 按协议保留用于后续工具循环。
+
+通用服务仍可用 `--provider compatible --base-url http://127.0.0.1:11434/v1 --model YOUR_MODEL`，读取 MY_HERMES_API_KEY 或 OPENAI_API_KEY。仓库只做离线与本机协议测试，未使用真实凭证调用在线 Kimi 或真实 IM。
 
 ## 目录与文档
 
 ```text
 src/
-  core/         Agent、模型协议、Provider、工具运行时
+  core/         Agent、模型协议、工具运行时、providers/Kimi L0
   memory/       node:sqlite 会话、Markdown 长期记忆
   gateway/      事件授权、会话隔离与去重
   connectors/   JSONL、本机 HTTP
@@ -112,12 +127,12 @@ src/
   learning/     学习者练习与完整参考算法
   data/skills/  内置 Skill，构建时复制到 dist/data/
   cli.ts        运行、检查、调试和查看状态
-  lab.ts        五个离线阶段验收场景
+  lab.ts        0～5 六个离线阶段验收场景
 ```
 
-[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md)
+[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md) · [Kimi](docs/07-kimi-provider.md)
 
-运行数据默认存入 `.hermes-lab/`。用子命令的 `--home PATH` 或 `MY_HERMES_HOME` 隔离 profile；`config.json` 使用 `mode/provider/model/baseUrl/maxSteps/contextChars/turnTimeoutMs/autoReflect/plugins` 等配置，命令行优先。`check/demo` 也读取所选 profile 的 mode，但始终用临时数据和离线 Provider，不加载其插件。
+运行数据默认存入 `.hermes-lab/`。用子命令的 `--home PATH` 或 `MY_HERMES_HOME` 隔离 profile；`config.json` 使用 `mode/providerMode/provider/model/baseUrl/maxSteps/contextChars/turnTimeoutMs/autoReflect/plugins` 等配置，命令行优先。`check/demo` 也读取所选 profile 的 mode，但始终用临时数据和离线 Provider，不加载其插件。
 
 `chat/gateway` 用 `.runtime.lock/` 目录锁独占 profile。正常退出释放锁；崩溃后需先确认旧进程已停止，再手动移除锁目录，详见 [恢复步骤](docs/05-gateway.md)。`sessions`、`history SESSION_ID`、`doctor` 可查看本地状态。
 

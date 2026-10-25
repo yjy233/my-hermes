@@ -5,7 +5,7 @@ import { messageSize, validateModelResponse, type Emit, type Message, type Provi
 import type { ToolRegistry } from '../core/tools.js';
 import type { MemoryHit } from '../memory/store.js';
 
-/** L1: observe -> model -> bounded actions -> observe -> final. Does not mutate input. */
+/** L1：观察 → 模型决策 → 有界工具执行 → 观察结果 → 最终答复；不修改输入。 */
 export async function runLoop(provider: Provider, registry: ToolRegistry, messages: Message[], maxSteps: number,
   emit: Emit, signal?: AbortSignal): Promise<Message[]> {
   if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) throw new Error('maxSteps must be positive');
@@ -17,10 +17,11 @@ export async function runLoop(provider: Provider, registry: ToolRegistry, messag
     signal?.throwIfAborted();
     validateModelResponse(response);
     const assistant: Message = { role: 'assistant', content: response.content,
+      ...(response.reasoningContent !== undefined ? { reasoningContent: response.reasoningContent } : {}),
       ...(response.toolCalls?.length ? { toolCalls: response.toolCalls } : {}) };
     context.push(assistant); delta.push(assistant);
     if (!response.toolCalls?.length) { emit('turn.final', { step }); return delta; }
-    // The last model step must leave room for a final answer; don't start new side effects.
+    // 最后一步必须用于形成最终答复，不再启动新的工具副作用。
     if (step === maxSteps - 1) throw new StepLimitExceeded(`No final answer after ${maxSteps} model steps`);
     for (const call of response.toolCalls) {
       signal?.throwIfAborted();
@@ -34,7 +35,7 @@ export async function runLoop(provider: Provider, registry: ToolRegistry, messag
   throw new StepLimitExceeded(`No final answer after ${maxSteps} model steps`);
 }
 
-/** L2: select a contiguous suffix of whole user turns; original SQLite history is untouched. */
+/** L2：连续保留最近的完整用户轮次，不改动 SQLite 中的原始历史。 */
 export function compactHistory(messages: Message[], maxChars: number): Message[] {
   if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error('maxChars must be positive');
   if (messages[0]?.role !== 'system') throw new Error('Context must begin with a system message');

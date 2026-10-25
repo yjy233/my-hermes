@@ -1,4 +1,4 @@
-/** Explicit trusted extension; TypeScript type imports are erased at runtime. */
+/** 显式加载的可信扩展；TypeScript 类型导入在运行时会被移除。 */
 import type { PluginContext } from '../../src/plugins/manager.js';
 
 export function register(context: PluginContext): void {

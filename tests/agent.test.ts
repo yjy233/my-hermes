@@ -1,4 +1,4 @@
-/** Fault-injection tests at the replaceable algorithm boundary, using real local persistence. */
+/** 在可替换的算法边界注入故障，并使用真实的本地持久化存储进行测试。 */
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,7 +30,7 @@ function fixture(t: TestContext, provider: Provider,
   return { root, store, agent, messages: () => store.loadMessages(store.getOrCreate('session', 'alice').id) };
 }
 
-/** Simulate completed or faulty learner exercises without changing learner source or global modules. */
+/** 不修改学习者源码或全局模块，模拟已完成或存在缺陷的练习实现。 */
 function injectAlgorithms(agent: Agent, overrides: Partial<Algorithms>): void {
   (agent as unknown as { algorithms: Algorithms }).algorithms = { ...reference, ...overrides };
 }
@@ -62,8 +62,8 @@ for (const mode of ['reference', 'learner'] as const satisfies readonly Mode[]) 
   test(`oversized provider final cannot be persisted in ${mode} mode`, async t => {
     const provider: Provider = { async complete() { return { content: 'x'.repeat(16_001) }; } };
     const { agent, messages } = fixture(t, provider, { mode });
-    // The learner normally contains TODOs. Supply a completed loop to exercise
-    // the same production BudgetProvider wrapper around its model requests.
+    // learner 中通常保留待实现的练习；这里提供已完成的循环，
+    // 验证它发出的模型请求经过实际运行时同一个 BudgetProvider 包装层。
     if (mode === 'learner') injectAlgorithms(agent, {});
     await assert.rejects(() => agent.run('session', 'alice', 'hello'), /content exceeds/);
     assert.deepEqual(messages(), []);

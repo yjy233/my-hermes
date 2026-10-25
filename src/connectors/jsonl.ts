@@ -4,7 +4,7 @@ import { Gateway, parseInbound } from '../gateway/router.js';
 
 const MAX_LINE_BYTES = 64_000;
 
-/** Bounded byte-level framing; discard an oversized line until its next newline. */
+/** 按字节分帧并限制大小；遇到超大行后丢弃内容，直到下一个换行符。 */
 export async function runJsonl(gateway: Gateway, input: Readable, output: Writable): Promise<void> {
   let parts: Buffer[] = [];
   let bytes = 0;
@@ -45,7 +45,7 @@ export async function runJsonl(gateway: Gateway, input: Readable, output: Writab
       const end = newline === -1 ? chunk.length : newline;
       const size = end - start;
       if (!overflow && bytes + size <= MAX_LINE_BYTES) {
-        // Copy the slice so a tiny line cannot retain an arbitrarily large input chunk.
+        // 复制切片，避免短行继续引用任意大的输入数据块。
         if (size) parts.push(Buffer.from(chunk.subarray(start, end)));
         bytes += size;
       } else {

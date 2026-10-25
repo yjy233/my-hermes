@@ -4,7 +4,7 @@ import { ProviderError } from './errors.js';
 import { fromWireMessage, isRecord, toWireMessage, validateModelResponse,
   type Message, type ModelResponse, type Provider, type ToolSchema } from './models.js';
 
-/** Deterministic test double, not a language model. */
+/** 确定性的离线模拟器，用于稳定复现模型响应与工具调用流程。 */
 export class DemoProvider implements Provider {
   async complete(messages: Message[], _tools: ToolSchema[], signal?: AbortSignal): Promise<ModelResponse> {
     signal?.throwIfAborted();
@@ -56,8 +56,7 @@ export class OpenAICompatibleProvider implements Provider {
         const response = await fetch(this.url, {
           method: 'POST', signal: requestSignal, redirect: 'error',
           headers: { 'Content-Type': 'application/json', ...(this.options.apiKey ? { Authorization: `Bearer ${this.options.apiKey}` } : {}) },
-          body: JSON.stringify({ model: this.options.model, messages: messages.map(toWireMessage), max_tokens: 2048,
-            ...(tools.length ? { tools, tool_choice: 'auto' } : {}) }),
+          body: JSON.stringify(this.buildRequestBody(messages, tools)),
         });
         if (!response.ok) { await response.body?.cancel(); throw new ProviderError(`Model HTTP ${response.status}`); }
         const chunks: Uint8Array[] = [];
@@ -74,20 +73,32 @@ export class OpenAICompatibleProvider implements Provider {
           }
         } finally { reader.releaseLock(); }
         const data: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
-        if (!isRecord(data) || !Array.isArray(data.choices) || !isRecord(data.choices[0])) throw new ProviderError('Invalid model envelope');
-        const choice = data.choices[0];
-        if (choice.finish_reason === 'length' || choice.finish_reason === 'content_filter') throw new ProviderError('Model did not complete its response');
-        const message = fromWireMessage(choice.message);
-        if (message.role !== 'assistant') throw new ProviderError('Unexpected model role');
-        const result: ModelResponse = { content: message.content, ...(message.toolCalls ? { toolCalls: message.toolCalls } : {}) };
-        validateModelResponse(result);
-        return result;
+        return this.parseResponse(data);
       }, this.timeoutMs, signal);
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
       if (error instanceof ProviderError) throw error;
-      // Error bodies/URLs can echo prompts and credentials; report only the category.
+      // 错误正文或 URL 可能包含提示词和凭证，因此只报告错误类别。
       throw new ProviderError(`Invalid/unavailable model response (${error instanceof Error ? error.name : 'Error'})`);
     }
+  }
+
+  protected buildRequestBody(messages: Message[], tools: ToolSchema[]): Record<string, unknown> {
+    return { model: this.options.model, messages: messages.map(toWireMessage), max_tokens: 2048,
+      ...(tools.length ? { tools, tool_choice: 'auto' } : {}) };
+  }
+
+  protected parseResponse(data: unknown): ModelResponse {
+    if (!isRecord(data) || !Array.isArray(data.choices) || !isRecord(data.choices[0])) throw new ProviderError('Invalid model envelope');
+    const choice = data.choices[0];
+    if (choice.finish_reason === 'length' || choice.finish_reason === 'content_filter') throw new ProviderError('Model did not complete its response');
+    const message = fromWireMessage(choice.message);
+    if (message.role !== 'assistant') throw new ProviderError('Unexpected model role');
+    const result: ModelResponse = { content: message.content,
+      ...(message.toolCalls ? { toolCalls: message.toolCalls } : {}),
+      ...(message.reasoningContent !== undefined ? { reasoningContent: message.reasoningContent } : {}),
+    };
+    validateModelResponse(result);
+    return result;
   }
 }

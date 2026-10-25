@@ -1,4 +1,4 @@
-/** Explicit trusted JavaScript/TypeScript plugins; not a security sandbox. */
+/** 显式加载可信 JavaScript/TypeScript 插件；此机制不提供安全沙箱。 */
 import { realpathSync, statSync } from 'node:fs';
 import { extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -35,8 +35,8 @@ export class PluginManager {
         throw new Error(`Plugin must be a JavaScript or TypeScript file: ${path}`);
       }
       if (this.loaded.includes(path)) throw new Error(`Plugin is already loaded: ${path}`);
-      // A stable URL lets Node cache one module per file, rather than one per turn.
-      // Successful imports require a process restart after source edits.
+      // 使用稳定 URL，让 Node 每个文件只缓存一个模块，避免每轮对话创建新模块。
+      // 成功导入后修改源码，需要重启进程才会生效。
       const module: unknown = await import(pathToFileURL(path).href);
       if (!module || typeof module !== 'object' || !('register' in module)
           || typeof module.register !== 'function') {
@@ -65,7 +65,7 @@ export class PluginManager {
       try {
         const result = handler({ ...payload });
         if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-          // Observe accidental async rejection before reporting the contract error.
+          // 先捕获意外产生的异步拒绝，再报告契约错误。
           void Promise.resolve(result).catch(() => undefined);
           throw new Error('Plugin hooks cannot return promises');
         }

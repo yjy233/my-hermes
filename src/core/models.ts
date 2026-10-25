@@ -1,4 +1,4 @@
-/** Internal camelCase messages, converted to wire format only at the provider boundary. */
+/** 内部消息使用 camelCase 字段，仅在 Provider 边界转换为 API 协议格式。 */
 export interface ToolCall {
   id: string;
   name: string;
@@ -9,8 +9,10 @@ export interface Message {
   content: string;
   toolCalls?: ToolCall[];
   toolCallId?: string;
+  /** 保留思考模型工具调用所需的协议元数据，不作为最终答复展示。 */
+  reasoningContent?: string;
 }
-export interface ModelResponse { content: string; toolCalls?: ToolCall[]; }
+export interface ModelResponse { content: string; toolCalls?: ToolCall[]; reasoningContent?: string; }
 export interface ToolSchema {
   type: 'function';
   function: { name: string; description: string; parameters: Record<string, unknown> };
@@ -22,6 +24,7 @@ export type Emit = (event: string, payload: Record<string, unknown>) => void;
 export const MAX_MODEL_CONTENT_CHARS = 16_000;
 export const MAX_TOOL_CALLS = 8;
 export const MAX_TOOL_ARGUMENT_CHARS = 16_000;
+export const MAX_MODEL_REASONING_CHARS = 32_000;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -45,6 +48,10 @@ export function validateModelResponse(value: unknown): asserts value is ModelRes
     throw new Error('Model response must contain text content');
   }
   if (value.content.length > MAX_MODEL_CONTENT_CHARS) throw new Error('Model content exceeds 16000 characters');
+  if (value.reasoningContent !== undefined && (typeof value.reasoningContent !== 'string' ||
+      value.reasoningContent.length > MAX_MODEL_REASONING_CHARS)) {
+    throw new Error('Model reasoningContent must be text of at most 32000 characters');
+  }
   const calls = value.toolCalls ?? [];
   if (!Array.isArray(calls) || calls.length > MAX_TOOL_CALLS) throw new Error('At most 8 tool calls allowed');
   if (!value.content && calls.length === 0) throw new Error('Model returned neither content nor tool calls');
@@ -74,6 +81,7 @@ export function toWireMessage(message: Message): Record<string, unknown> {
       function: { name: call.name, arguments: JSON.stringify(call.arguments) },
     })) } : {}),
     ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+    ...(message.reasoningContent !== undefined ? { reasoning_content: message.reasoningContent } : {}),
   };
 }
 
@@ -84,6 +92,10 @@ export function fromWireMessage(value: unknown): Message {
   const content = value.content ?? '';
   if (typeof content !== 'string') throw new Error('Only text messages are supported');
   const message: Message = { role: value.role as Message['role'], content };
+  if (value.reasoning_content !== undefined && value.reasoning_content !== null) {
+    if (typeof value.reasoning_content !== 'string') throw new Error('Invalid reasoning_content');
+    message.reasoningContent = value.reasoning_content;
+  }
   if (value.tool_calls !== undefined) {
     if (!Array.isArray(value.tool_calls)) throw new Error('Invalid tool calls');
     message.toolCalls = value.tool_calls.map((entry: unknown) => {

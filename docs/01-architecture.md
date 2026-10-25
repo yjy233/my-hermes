@@ -10,7 +10,7 @@ flowchart TB
     JSONL[JSONL connector] --> GW
     HTTP[Local HTTP connector + bearer token] --> GW
     GW --> CORE[Core Agent: prompt + bounded tool loop]
-    CORE --> MODEL[Provider: demo / compatible API]
+    CORE --> MODEL[Provider: demo / Kimi / compatible API]
     CORE --> TOOLS[Tool Registry: schemas + limits + errors]
     CORE --> MEM[Memory: Markdown + SQLite sessions]
     CORE --> SK[Skills: index then on-demand read]
@@ -28,14 +28,14 @@ flowchart TB
 
 ## 关键决策
 
-- `reference` 可直接运行；`learner` 调用 `src/learning/exercises.ts`，未完成抛出带 L1～L5 的异常，绝不暗中回退。
+- Core 的 reference/learner 选择 L1～L5；Kimi Provider 独立提供 L0 练习与参考实现，通过 --provider-mode 选择，默认 learner。未完成会明确报错，绝不暗中回退。阶段检查的 --mode 选择当前阶段的学习实现。
 - 同一会话串行，不同会话可并发；路由包含 channel、conversation、user。稳定 event ID 用于已完成消息去重。
 - SQLite 保存成功轮次的完整消息和工具配对；裁剪只改变下一次模型上下文，不覆盖历史。数据库通过 Node 内置 `node:sqlite` 访问，未引入外部数据库包。
 - 按用户 scope 隔离有界 `MEMORY.md` 与 `USER.md`；新会话构建冻结快照，写入后通过工具可读到即时值，新会话才更新系统提示。
 - Skills 只提前加载名称/描述，正文按需读。新会话刷新索引，使长驻 Gateway 能发现刚批准的 Skill；已有会话保留原快照。
 - Plugin 只加载显式指定入口，统一注册工具和观察 Hook，拒绝覆盖已有工具。Node 动态 import 缓存模块，修改插件后需重启。
 - 模型请求、工具执行、回合与步数均有预算。用户输入与单次模型文本最多 16,000 字符；单响应最多 8 个工具调用，每个参数对象序列化后最多 16,000 字符。拒绝 NaN/Infinity，避免非 JSON 数值进入历史。
-- 工具结果默认最多 12,000 个序列化 JSON 字符，最小预算 200；超限保留合法成功/错误结构并标记 `truncated: true`。请求预算包含消息与工具 schema；长度按 JavaScript 的 `string.length` 计算，是教学近似，未实现模型专用 tokenizer。
+- 工具结果默认最多 12,000 个序列化 JSON 字符，最小预算 200；超限保留合法成功/错误结构并标记 `truncated: true`。请求预算包含消息与工具 schema；长度按 JavaScript 的 `string.length` 计算，是教学近似，未实现模型专用 tokenizer。reasoningContent 最多 32000 字符，并计入整体上下文预算与历史持久化。
 - 默认 DemoProvider 用于断点与测试；真实模型通过 `fetch` 调用兼容 Chat Completions 的接口，不依赖特定厂商 SDK。
 - `AbortSignal` 贯穿 Provider、工具和连接器。异步实现应响应取消；同步阻塞代码会阻塞事件循环，取消不能回滚已经完成的外部副作用。可信 Plugin 不属于安全沙箱。
 
@@ -43,7 +43,7 @@ flowchart TB
 
 ## TypeScript 接口
 
-内部 `Message` 使用 camelCase：`role/content/toolCalls/toolCallId`，`ToolCall` 为 `id/name/arguments`，`ModelResponse` 为 `content/toolCalls`。`src/core/models.ts` 的 `toWireMessage/fromWireMessage` 负责转换 Chat Completions 的 `tool_calls/tool_call_id` 等字段，连接器不直接拼模型消息。
+内部 `Message` 使用 camelCase：`role/content/toolCalls/toolCallId/reasoningContent`，`ToolCall` 为 `id/name/arguments`，`ModelResponse` 为 `content/toolCalls/reasoningContent`。`src/core/models.ts` 的 `toWireMessage/fromWireMessage` 负责转换 Chat Completions 的 `tool_calls/tool_call_id/reasoning_content` 等字段，连接器不直接拼模型消息。
 
 | 接口 | 契约 |
 | --- | --- |
@@ -56,7 +56,7 @@ flowchart TB
 | `EvolutionManager(root, skillsRoot)` | `propose`、`listProposals`、`approve`；提升只由本地 CLI 显式调用 |
 | `Gateway.handle(message, signal?)` | 归一化事件 → 授权 → 会话串行 → Agent → 缓存回复 |
 
-学习接口在 `src/learning/exercises.ts`：`runLoop`、`compactHistory`、`selectMemories`、`sessionKey`、`reflect`。消息大小与响应检查辅助函数位于 `core/models.ts`，共享异常位于 `core/errors.ts`。
+L0 是 `src/core/providers/kimi.ts` 的 complete；其余学习接口在 `src/learning/exercises.ts`：`runLoop`、`compactHistory`、`selectMemories`、`sessionKey`、`reflect`。消息大小与响应检查辅助函数位于 `core/models.ts`，共享异常位于 `core/errors.ts`。
 
 ## 数据流与故障
 

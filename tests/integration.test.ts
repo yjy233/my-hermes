@@ -1,4 +1,4 @@
-/** Complete offline system: real SQLite, Markdown memory, tools, Gateway and reviewed evolution. */
+/** 完整离线系统测试：使用真实 SQLite、Markdown 记忆、工具、Gateway 和经审核的自进化流程。 */
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

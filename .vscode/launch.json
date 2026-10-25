@@ -1,0 +1,81 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Kimi Provider：离线验收",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx"],
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": [
+        "check",
+        "--stage", "0",
+        "--mode", "${input:mode}",
+        "--trace",
+        "--debug"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Agent Lab：阶段验收（选择阶段与模式）",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx"],
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": [
+        "check",
+        "--stage", "${input:stage}",
+        "--mode", "${input:mode}",
+        "--trace",
+        "--debug"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Agent Lab：交互聊天（离线 Demo）",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx"],
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": [
+        "chat",
+        "--provider", "demo",
+        "--mode", "${input:mode}",
+        "--trace",
+        "--debug"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "stage",
+      "type": "pickString",
+      "description": "选择独立调试和验收的阶段（0：Kimi Provider）",
+      "options": ["0", "1", "2", "3", "4", "5"],
+      "default": "0"
+    },
+    {
+      "id": "mode",
+      "type": "pickString",
+      "description": "learner 调试自己的实现；reference 对照完整答案",
+      "options": ["learner", "reference"],
+      "default": "learner"
+    }
+  ]
+}

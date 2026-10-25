@@ -71,7 +71,7 @@ function json(response: ServerResponse, status: number, payload: unknown): void 
   response.end(body);
 }
 
-/** Returns an unlistened server. The caller must listen on the validated loopback host. */
+/** 返回尚未监听的 server；调用方必须在已校验的本机回环地址上启动监听。 */
 export function createHttpServer(gateway: Gateway, options: HttpOptions): Server {
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8765;
@@ -148,7 +148,7 @@ export function createHttpServer(gateway: Gateway, options: HttpOptions): Server
         throw new RequestInputError(error instanceof Error ? error.message : 'Invalid message');
       }
       const operation = gateway.handle(message, controller.signal);
-      // Even a misbehaving custom agent that ignores AbortSignal cannot delay the HTTP timeout.
+      // 即使自定义 agent 忽略 AbortSignal，HTTP 超时也不能被它拖延。
       const reply = await withAbort(operation, controller.signal);
       json(response, 200, reply);
     } catch (error: unknown) {

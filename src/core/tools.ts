@@ -1,7 +1,7 @@
 import { abortReason, withTimeout } from './async.js';
 import { assertFiniteJson, isRecord, type Message, type ToolCall, type ToolSchema } from './models.js';
 
-/** Deliberately small JSON Schema subset; unsupported constraints fail at registration. */
+/** 仅支持明确列出的 JSON Schema 子集，注册时拒绝不支持的约束。 */
 export type JsonSchema = Record<string, unknown>;
 export interface ToolContext { signal: AbortSignal; }
 export interface Tool {

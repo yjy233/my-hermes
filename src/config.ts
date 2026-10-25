@@ -2,14 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { isRecord } from './core/models.js';
 import type { Mode } from './learning/types.js';
+import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL } from './core/providers/kimi-shared.js';
 
 export interface Settings {
-  home: string; mode: Mode; provider: 'demo' | 'compatible'; model: string; baseUrl: string;
+  home: string; mode: Mode; providerMode: Mode; provider: 'demo' | 'compatible' | 'kimi'; model: string; baseUrl: string;
   maxSteps: number; contextChars: number; turnTimeoutMs: number; autoReflect: boolean; plugins: string[];
 }
 export type SettingsOverrides = Partial<Omit<Settings, 'home'>>;
 const DEFAULTS: Omit<Settings, 'home'> = {
-  mode: 'reference', provider: 'demo', model: 'local-model', baseUrl: 'http://127.0.0.1:11434/v1',
+  mode: 'reference', providerMode: 'learner', provider: 'demo', model: 'local-model', baseUrl: 'http://127.0.0.1:11434/v1',
   maxSteps: 8, contextChars: 24_000, turnTimeoutMs: 120_000, autoReflect: false, plugins: [],
 };
 export function loadSettings(home?: string, overrides: SettingsOverrides = {}): Settings {
@@ -18,13 +19,21 @@ export function loadSettings(home?: string, overrides: SettingsOverrides = {}): 
   const raw: unknown = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
   if (!isRecord(raw)) throw new Error('config.json must contain an object');
   for (const key of Object.keys(raw)) if (!Object.hasOwn(DEFAULTS, key)) throw new Error(`Unknown config key: ${key}`);
-  const data: Record<string, unknown> = { ...DEFAULTS, ...raw,
-    ...Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined)) };
-  for (const name of ['mode', 'provider', 'model', 'baseUrl']) {
+  const explicit = Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined));
+  const source = { ...raw };
+  // 切换 Provider 时选用对应默认值，避免意外把 Kimi 请求发往本地模型 URL。
+  if (explicit.provider !== undefined && explicit.provider !== (source.provider ?? DEFAULTS.provider)) {
+    delete source.model; delete source.baseUrl;
+  }
+  const selected = explicit.provider ?? source.provider ?? DEFAULTS.provider;
+  const preset = selected === 'kimi' ? { model: KIMI_DEFAULT_MODEL, baseUrl: KIMI_DEFAULT_BASE_URL } : {};
+  const data: Record<string, unknown> = { ...DEFAULTS, ...preset, ...source, ...explicit };
+  for (const name of ['mode', 'providerMode', 'provider', 'model', 'baseUrl']) {
     if (typeof data[name] !== 'string' || !(data[name] as string).trim()) throw new Error(`${name} must be nonempty text`);
   }
   if (!['reference', 'learner'].includes(data.mode as string)) throw new Error('mode must be reference or learner');
-  if (!['demo', 'compatible'].includes(data.provider as string)) throw new Error('provider must be demo or compatible');
+  if (!['reference', 'learner'].includes(data.providerMode as string)) throw new Error('providerMode must be reference or learner');
+  if (!['demo', 'compatible', 'kimi'].includes(data.provider as string)) throw new Error('provider must be demo, compatible or kimi');
   if (!Number.isSafeInteger(data.maxSteps) || (data.maxSteps as number) < 1) throw new Error('maxSteps must be a positive integer');
   if (!Number.isSafeInteger(data.contextChars) || (data.contextChars as number) < 1000) throw new Error('contextChars must be an integer >=1000');
   if (typeof data.turnTimeoutMs !== 'number' || !Number.isFinite(data.turnTimeoutMs) ||

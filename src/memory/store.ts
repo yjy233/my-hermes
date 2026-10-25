@@ -1,4 +1,4 @@
-/** Durable complete transcripts; context selection never deletes stored history. */
+/** 持久化完整会话轨迹；上下文筛选不会删除已保存的历史记录。 */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -32,6 +32,9 @@ function parseMessage(payload: string): Message {
         || Array.isArray(call.arguments)))) throw new Error('Invalid stored tool calls');
   if (message.toolCallId !== undefined && typeof message.toolCallId !== 'string') {
     throw new Error('Invalid stored tool call ID');
+  }
+  if (message.reasoningContent !== undefined && typeof message.reasoningContent !== 'string') {
+    throw new Error('Invalid stored reasoning content');
   }
   return message;
 }
@@ -99,12 +102,13 @@ export class SessionStore {
   }
 
   appendMessages(id: string, messages: Message[]): void {
-    // Serialize before opening the transaction; never partially append a malformed turn.
+    // 开始事务前先序列化，避免只写入畸形轮次的一部分。
     const serialized = messages.map(message => {
       const clean: Message = {
         role: message.role, content: message.content,
         ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
         ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+        ...(message.reasoningContent !== undefined ? { reasoningContent: message.reasoningContent } : {}),
       };
       assertFiniteJson(clean);
       const payload = JSON.stringify(clean);
