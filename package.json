@@ -1,0 +1,43 @@
+{
+  "name": "my-hermes",
+  "version": "0.2.0",
+  "description": "A staged Hermes-inspired agent learning lab in TypeScript",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "my-hermes": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "check": "tsx src/cli.ts check",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "verify": "npm run typecheck && npm test && npm run check -- --all --mode reference && npm run build",
+    "prepack": "npm run build"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

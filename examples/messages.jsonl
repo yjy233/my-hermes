@@ -1,0 +1,4 @@
+{"eventId":"example-1","channel":"jsonl","conversationId":"study","userId":"learner","text":"/calc (2+3)*4"}
+{"eventId":"example-2","channel":"jsonl","conversationId":"study","userId":"learner","text":"/remember 我在学习 TypeScript Agent 架构"}
+{"eventId":"example-3","channel":"jsonl","conversationId":"next-session","userId":"learner","text":"/memory"}
+{"eventId":"example-1","channel":"jsonl","conversationId":"study","userId":"learner","text":"/calc (2+3)*4"}

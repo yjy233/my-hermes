@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+.hermes-lab/
+.env
+*.tgz
+*.tsbuildinfo
+.DS_Store
