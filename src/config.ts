@@ -6,12 +6,12 @@ import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL } from './core/providers/kimi
 
 export interface Settings {
   home: string; mode: Mode; providerMode: Mode; provider: 'demo' | 'compatible' | 'kimi'; model: string; baseUrl: string;
-  maxSteps: number; contextChars: number; turnTimeoutMs: number; autoReflect: boolean; plugins: string[];
+  maxSteps: number; contextChars: number; turnTimeoutMs: number; providerTimeoutMs: number; autoReflect: boolean; plugins: string[];
 }
 export type SettingsOverrides = Partial<Omit<Settings, 'home'>>;
 const DEFAULTS: Omit<Settings, 'home'> = {
   mode: 'reference', providerMode: 'learner', provider: 'demo', model: 'local-model', baseUrl: 'http://127.0.0.1:11434/v1',
-  maxSteps: 8, contextChars: 24_000, turnTimeoutMs: 120_000, autoReflect: false, plugins: [],
+  maxSteps: 8, contextChars: 24_000, turnTimeoutMs: 120_000, providerTimeoutMs: 30_000, autoReflect: false, plugins: [],
 };
 export function loadSettings(home?: string, overrides: SettingsOverrides = {}): Settings {
   const root = resolve(home ?? process.env.MY_HERMES_HOME ?? '.hermes-lab');
@@ -38,6 +38,8 @@ export function loadSettings(home?: string, overrides: SettingsOverrides = {}): 
   if (!Number.isSafeInteger(data.contextChars) || (data.contextChars as number) < 1000) throw new Error('contextChars must be an integer >=1000');
   if (typeof data.turnTimeoutMs !== 'number' || !Number.isFinite(data.turnTimeoutMs) ||
       data.turnTimeoutMs <= 0 || data.turnTimeoutMs > 2_147_483_647) throw new Error('turnTimeoutMs must be positive and finite (<=2147483647)');
+  if (typeof data.providerTimeoutMs !== 'number' || !Number.isFinite(data.providerTimeoutMs) ||
+      data.providerTimeoutMs <= 0 || data.providerTimeoutMs > 2_147_483_647) throw new Error('providerTimeoutMs must be positive and finite (<=2147483647)');
   if (typeof data.autoReflect !== 'boolean') throw new Error('autoReflect must be boolean');
   if (!Array.isArray(data.plugins) || data.plugins.some(path => typeof path !== 'string' || !path.trim())) throw new Error('plugins must be explicit trusted file paths');
   return { ...data, home: root, plugins: data.plugins.map((path: string) => isAbsolute(path) ? path : resolve(root, path)) } as Settings;

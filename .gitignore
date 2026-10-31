@@ -3,6 +3,8 @@ dist/
 coverage/
 .hermes-lab/
 .env
+.env.*
+!.env.example
 *.tgz
 *.tsbuildinfo
 .DS_Store

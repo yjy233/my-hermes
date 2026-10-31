@@ -1,4 +1,4 @@
-/** 公共配置校验与默认值；实际的 Kimi HTTP 请求和响应处理由学习者实现。 */
+/** 公共配置校验与默认值，供 Kimi 实现和参考实现共用。 */
 export const KIMI_DEFAULT_BASE_URL = 'https://api.moonshot.cn/v1';
 export const KIMI_DEFAULT_MODEL = 'kimi-k3.1-pro';
 export interface KimiProviderOptions {

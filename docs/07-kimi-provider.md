@@ -1,81 +1,97 @@
-# Kimi Provider 练习（L0）
+# Kimi Provider：配置、运行与协议回归
 
-先独立实现真实模型连接，再组合 Agent。L0 的学习入口是 `src/core/providers/kimi.ts` 中的 `KimiProvider.complete`；它是明确的 TODO，不会偷偷调用完整答案。参考实现放在 `kimi-reference.ts`，公共选项与默认值放在 `kimi-shared.ts`，运行入口通过 `createProvider` 选择实现。
+`src/core/providers/kimi.ts` 的 `KimiProvider.complete` 已完整实现，可直接用于真实 API。它独立处理 HTTP 请求、响应、工具调用、推理字段、超时和取消，不以调用 kimi-reference.ts 代替实现。参考版仍保留，供阅读和协议对照；L1～L5 的 Agent 算法练习继续保留。
 
-## 先离线验收，再接真实 API
+## 填入 API key 后测试
+
+1. 打开项目根目录的 `.env`；不存在时从 [.env.example](../.env.example) 复制一份。
+2. 在 MOONSHOT_API_KEY 后填入对应平台的 API key。密钥只放本地 `.env` 或 shell 环境，不写入 config.json。
+3. 运行离线协议检查和本地配置检查：
 
 ```sh
-npm run dev -- check --stage 0 --mode reference --trace
-npm run dev -- check --stage 0 --mode learner --trace --debug
+npm run kimi:check
+npm run kimi:doctor
 ```
 
-阶段 0 使用本机 mock HTTP 服务与测试密钥，验收选中 Provider 的真实请求/响应链路；不连接 Moonshot，不读取真实密钥，也不产生在线调用费用。`--mode` 在这里选择 L0 的 learner/reference，`--provider-mode` 不参与阶段选择。具名 case 检查消息转换、工具调用、推理字段、错误和取消，失败结果指出 L0 与具体 case。
+kimi:check 用本机 mock HTTP 服务与测试密钥检查主实现，不连接 Moonshot。kimi:doctor 不调用模型，只检查配置；apiKeyConfigured 为 true 表示检测到非空密钥，不代表已经验证密钥有效或模型权限，输出不会显示密钥值。
 
-VS Code 的“运行和调试”可选择 **Kimi Provider：离线验收**，按 F5 后选择 mode；通用阶段配置也可选 stage 0。断点先放在 `kimi.ts` 的 complete，再查看共享消息转换和实际 HTTP 请求。普通 case 有 3000 ms 等待上限，`--debug` 停用这层计时以便单步，Provider 自身超时仍独立存在。
+填好真实密钥后，由你在本机运行：
 
-## 协议基线与依据
+```sh
+npm run kimi:test
+npm run kimi:chat
+```
 
-本项目于 **2026-10-25** 核对官方文档，选择 `kimi-k3.1-pro` 作为教学基线。它始终启用推理，使用顶层 `reasoning_effort`，不能沿用 K2 的 `thinking` 开关；固定采样参数应省略。这里选 low 降低入门场景的推理强度，不代表模型关闭推理。[K3.1 Pro 官方说明](https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart)、[Reasoning Effort](https://platform.kimi.ai/docs/guide/use-reasoning-effort)。
+kimi:test 发出一次真实请求，要求只回复“Kimi 连接成功”；kimi:chat 开始真实交互。两个脚本都选择 Kimi 主实现和参考 Core，直接可用，不要求先补齐 L1～L5。本次仓库验证只使用离线与 mock 协议，没有代你调用在线 Kimi。
 
-| 项目 | 教学约定 |
+CLI 默认读取运行目录下的 `.env`，也可指定文件：
+
+```sh
+npm run dev -- doctor --provider kimi --env-path ./.env.local
+```
+
+已存在的 shell 环境变量优先于文件，包括显式设置的空值；文件只补充缺失项。支持 MOONSHOT_API_KEY 和 KIMI_API_KEY，Kimi 不回退读取 OPENAI_API_KEY。若更新文件后行为没变，先检查 shell 是否仍设置旧值；不需要把密钥打印到终端排查。
+
+## 模型、地址与超时配置
+
+运行配置位于本地 `.hermes-lab/config.json`，示例见 [examples/config/kimi.json](../examples/config/kimi.json)。配置和 `.env` 均应留在本地；已存在的 profile 不会被初始化过程覆盖。kimi:* 脚本显式选择 Kimi 和参考 Core，旧 profile 的 provider 选择不会使测试误用 Demo。
+
+| 配置 | 含义 |
 | --- | --- |
-| 默认模型 | kimi-k3.1-pro；其他模型须自行核对参数兼容性 |
-| 国内 API root | https://api.moonshot.cn/v1 |
-| 国际 API root | https://api.moonshot.ai/v1 |
-| 请求路径 | 在 root 后追加 /chat/completions |
-| 身份认证 | Authorization: Bearer，加对应平台创建的 API key |
-| 响应模式 | stream=false，完整 JSON 响应 |
-| 推理参数 | reasoning_effort=low；不发送 thinking |
-| 生成预算 | max_completion_tokens=8192；本项目预算，不保证复杂任务一定能完成 |
-| 采样参数 | 省略 temperature、top_p、n 与 penalty 参数 |
+| provider: kimi | 使用 Kimi 连接器 |
+| providerMode: learner | 使用 kimi.ts 中已经完成的主实现；reference 选择独立对照版 |
+| mode: reference | 使用完整 Agent 算法，L1～L5 未完成也可聊天 |
+| model: kimi-k3.1-pro | 本项目验证过协议的模型基线 |
+| baseUrl | 国内 https://api.moonshot.cn/v1；国际 https://api.moonshot.ai/v1 |
+| providerTimeoutMs | 单次模型请求超时，通用默认 30000 ms，Kimi 示例使用 60000 ms |
+| turnTimeoutMs | 整个 Agent 回合超时，Kimi 示例使用 180000 ms |
+| contextChars | 消息与工具 schema 的近似字符预算，Kimi 示例使用 64000 |
 
-两个区域的请求入口见 [国内 Chat API](https://platform.moonshot.cn/docs/api/chat) 和 [国际 Chat API](https://platform.moonshot.ai/docs/api/chat)。官方当前推荐 max_completion_tokens，max_tokens 已标记弃用；命中生成上限会返回 length，不能把截断内容当成已完成答复。上述端点的文档地址可能重定向到新的官方 Kimi 文档域名。
+修改对应的本地配置即可调整模型、地址和超时；改变模型前核对参数兼容性，切换区域时使用对应平台创建、具备模型权限的 key。显式 --model/--base-url 优先于配置；切到不同 provider 时会使用其预设，避免误沿用本地模型服务地址。
 
-## 你需要实现什么
+## 已实现的协议能力
 
-1. 检查配置、密钥和 signal，在请求开始前拒绝已取消的调用。读取共享选项，别把密钥、模型、地址硬编码进函数。
-2. 把内部消息转换成 wire 格式，保留正文、工具调用与已有 reasoningContent；附带工具 schema、正确的 Kimi 参数和 Bearer header，使用 Node 内置 fetch 发起 POST。
-3. 结合外部 signal 与 Provider 超时，限制响应字节数，严格解析 UTF-8 和 JSON；结束时清理等待与资源。超时和失败不允许返回伪造最终文本。
-4. 检查 choices、assistant 角色、finish_reason 和消息结构。stop 表示最终答复，tool_calls 表示请求执行工具；length 等未完成状态应报错。工具参数是 JSON 字符串，解析后仍需有限值、大小与结构检查。
-5. 将 content、tool_calls 和 reasoning_content 转成内部 ModelResponse；调用共享响应校验，拒绝空结果、重复调用 ID、超额内容和非法参数。不要只取 content 而丢掉模型需要的协议字段。
-6. 返回可区分的错误类别，远端错误正文可能含请求内容，不能直接打印；trace 只记录阶段、步骤、工具名称等元数据。不要把密钥或原始推理字段写入 trace。
+本项目于 **2026-10-28** 再次核对官方文档。K3.1 Pro 始终启用推理，使用顶层 reasoning_effort；不能沿用 K2 的 thinking 开关。本实现使用 low，保留完整推理字段，不把 low 当成关闭推理。[官方模型说明](https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart)、[Reasoning Effort](https://platform.kimi.ai/docs/guide/use-reasoning-effort)。
 
-这是任务契约，不提供 complete 的实现代码。先让正常文本与工具返回通过，再逐项处理失败、边界与取消；需要对照时再读 kimi-reference.ts。
+- 请求通过内置 fetch 发往 /chat/completions，使用 Bearer key；完整 JSON 模式 stream=false。
+- 使用 reasoning_effort=low 和 max_completion_tokens=8192，省略固定的采样参数；8192 是项目预算，不保证复杂任务一定能完成。
+- 限制响应字节数，严格解析 UTF-8、JSON 与 assistant 消息，校验工具参数和调用 ID。
+- stop 表示最终结果，tool_calls 表示执行工具；length 等不完整状态报错，不能当作最终答复。
+- 外部 AbortSignal 与请求超时共同生效；错误报告保留类别，不直接打印远端错误正文、密钥或原始推理内容。
 
-## 为什么要保存 reasoningContent
+端点和生成上限参数以 [国内 Chat API](https://platform.moonshot.cn/docs/api/chat) 与 [国际 Chat API](https://platform.moonshot.ai/docs/api/chat) 为准。官方当前推荐 max_completion_tokens；文档链接可能重定向到新的官方 Kimi 域名。
 
-K3 多轮对话与工具调用要求回传完整 assistant 消息，包括 reasoning_content 和 tool_calls。只保存最终 content，会破坏后续请求所需的协议上下文。[官方多轮要求](https://platform.kimi.ai/docs/guide/use-reasoning-effort)。
+## reasoningContent 的完整往返
 
-内部字段为 `reasoningContent?: string`，wire 字段为 reasoning_content。L0 负责解析并返回，Core 的 runLoop 保留到 assistant 消息，SQLite payload 完整持久化，下一次请求通过 toWireMessage 回传。该字段受 32000 字符上限和总体上下文预算约束，不能放到预算之外。
+K3 多轮对话和工具循环要求回传完整 assistant 消息，包括 reasoning_content 与 tool_calls，不能只保留 content。[官方多轮要求](https://platform.kimi.ai/docs/guide/use-reasoning-effort)。
 
-聊天最终只显示 content，trace 不打印原始推理内容。数据库保留协议原始消息，本地 history 检查可能看到对应字段；查看状态与展示最终答复是不同的入口。
+Provider 将 reasoning_content 映射成内部 `reasoningContent?: string`；Core 保留到 assistant 消息，SQLite payload 完整存储，再由 toWireMessage 还原发送。该字段最多 32000 字符，并计入总体上下文预算。
 
-## 两个独立的 mode
+聊天最终只显示 content，trace 不打印原始推理字段。本地 history 可检查存储的协议消息，可能包含 reasoningContent；查看原始历史与显示最终回复是不同的入口。
+
+## 阶段 0 继续用作独立回归
+
+```sh
+npm run dev -- check --stage 0 --mode learner --trace
+npm run dev -- check --stage 0 --mode reference --trace
+```
+
+两个实现都应通过。阶段 0 只访问本机 mock，不调用在线服务；check 的 --mode 选择被验收的 Provider，不受运行时 --provider-mode 影响。具名 case 检查文本、工具、推理字段、异常和取消，后续改连接代码时可单独重跑。
+
+VS Code 可选“Kimi Provider：离线验收”，按 F5 选择 mode，在 complete 内设置断点。普通 case 默认 3000 ms 等待上限，--debug 停用这层计时；Provider 自身预算仍独立。
+
+两个运行选项的作用保持分开：
 
 | 选项 | 控制什么 |
 | --- | --- |
-| --mode reference / learner | Agent 的 L1～L5；在 check 中控制当前阶段学习实现，包括 L0 |
-| --provider-mode reference / learner | 真实运行时 Kimi Provider 的实现；Kimi 默认 learner |
+| --mode reference / learner | Agent 的 L1～L5；在 check 中选择当前阶段实现 |
+| --provider-mode learner / reference | Kimi 主实现 / 对照实现；主实现已完成 |
 
-因此，你可以用完整参考 Agent 调试自己的 Provider，不必先完成其他练习：
+完整命令等价于快捷脚本，可按需指定地址或消息：
 
 ```sh
-# 在本机设置对应平台的真实 API key，不写入 config.json
-export MOONSHOT_API_KEY='YOUR_PLATFORM_API_KEY'
 npm run dev -- chat --provider kimi --provider-mode learner --mode reference \
-  --message '请调用计算工具计算 (2+3)*4，并核对结果' --trace
+  --message '请使用计算工具计算 (2+3)*4，并核对结果' --trace
 ```
 
-也接受 KIMI_API_KEY；Kimi 不使用 OPENAI_API_KEY 作为兜底。L0 尚未实现时，上述命令明确失败；只想对照请求链路，可改 `--provider-mode reference`。
-
-默认使用国内 root。切换国际区时显式指定地址，并使用对应区域平台创建、具备模型权限的 key：
-
-```sh
-npm run dev -- chat --provider kimi --provider-mode reference --mode reference \
-  --base-url https://api.moonshot.ai/v1 --model kimi-k3.1-pro \
-  --message '请用工具计算 6*7'
-```
-
-显式切到 `--provider kimi` 会使用 Kimi 的模型与地址预设，避免沿用之前本地服务的 model/baseUrl；显式 --model/--base-url 优先。保持 provider 为 demo 或 compatible 时，Kimi 的 Provider 练习不会被误调用。
-
-在线调用需要你的平台 key、账户模型权限和网络连通性。本仓库只完成离线与 mock 协议验收，没有使用真实凭证请求在线 Kimi；离线通过后，仍应由你在本机验证真实账户的文本、工具循环和多轮恢复。
+L1～L5 尚未实现时使用 --mode reference；完成后可切 learner 测试自己的 Agent。在线结果还取决于账户权限、网络与服务响应，离线协议通过不能替代你填入真实 key 后的在线联调。

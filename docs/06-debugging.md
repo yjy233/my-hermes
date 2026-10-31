@@ -13,12 +13,12 @@ npm run build
 npm run dev -- init
 npm run check -- --all --mode reference
 npm run dev -- demo --stage 1 --mode reference
-npm run dev -- chat --message '/calc (2+3)*4' --trace
+npm run dev -- chat --provider demo --mode reference --message '/calc (2+3)*4' --trace
 ```
 
-默认 DemoProvider 是确定性替身，支持 `/calc`、`/remember`、`/memory`、`/recall`、`/skill`。`/remember` 整篇替换目标记忆，合并信息应先读后写；交互中 `/new` 更新会话边界，`/quit` 退出。
+上述命令显式选择 DemoProvider，不受本地 profile 是否已配置 Kimi 影响。Demo 是确定性替身，支持 `/calc`、`/remember`、`/memory`、`/recall`、`/skill`。`/remember` 整篇替换目标记忆，合并信息应先读后写；交互中 `/new` 更新会话边界，`/quit` 退出。
 
-构建产物入口是 `node dist/cli.js`，例如 `node dist/cli.js chat --message '/calc 2+2'`。构建同时复制内置技能到 dist/data/，不能只复制一个 cli.js 而遗漏其模块和资源。
+构建产物入口是 `node dist/cli.js`，例如 `node dist/cli.js chat --provider demo --mode reference --message '/calc 2+2'`。构建同时复制内置技能到 dist/data/，不能只复制一个 cli.js 而遗漏其模块和资源。
 
 ## Profile 与配置
 
@@ -34,12 +34,17 @@ npm run dev -- chat --message '/calc (2+3)*4' --trace
   "maxSteps": 8,
   "contextChars": 24000,
   "turnTimeoutMs": 120000,
+  "providerTimeoutMs": 30000,
   "autoReflect": false,
   "plugins": []
 }
 ```
 
-命令行覆盖配置。mode 控制 Core 算法，providerMode 独立控制 Kimi 的 L0 实现（默认 learner）；provider 可为 demo、compatible 或 kimi。修改后重启入口；已有会话仍保留提示快照，新会话读取最新记忆和 Skill 索引。插件配置路径相对 profile，--plugin 相对当前目录；密钥只放环境变量。
+命令行覆盖配置。mode 控制 Core 算法，providerMode 独立选择 Kimi 的已完成主实现 learner 或对照版 reference；provider 可为 demo、compatible 或 kimi。providerTimeoutMs 控制每次模型请求，turnTimeoutMs 控制整个回合。Kimi 示例配置使用 60000 ms 请求超时、180000 ms 回合超时与 64000 字符上下文，见 [kimi.json](../examples/config/kimi.json)。已有配置不会被初始化覆盖。
+
+修改配置后重启入口；已有会话仍保留提示快照，新会话读取最新记忆和 Skill 索引。插件配置路径相对 profile，--plugin 相对当前目录。API key 放本地 `.env` 或 shell 环境，不放 JSON。
+
+CLI 自动读取当前工作目录 `.env`，不存在时可从 [.env.example](../.env.example) 复制。支持 `--env-path PATH` 选择另一个文件；已有 shell 环境变量优先，文件只补充缺失项。需要调整 key 时直接编辑本地文件，不打印到终端。
 
 `check/demo` 也读取所选配置，mode 按 `--mode` → config.json → reference 决定；始终使用离线 Provider 和临时数据，不初始化日常 profile、不加载其中插件。配置为 learner 时，不带 --mode 的检查运行学习实现。
 
@@ -64,7 +69,7 @@ npm run dev -- check --stage 0 --mode reference --trace
 npm run dev -- check --stage 0 --mode learner --trace --debug
 ```
 
-每阶段由具名 case 检查选中学习实现的成功、失败与边界契约；阶段 0 是 Kimi Provider，本机 mock 不读取真实 key。标准输出是阶段 JSON，看失败 case 名、错误和 L0～L5 标识定位。trace 在标准错误给出 case.start、case.passed、case.failed 与带 case 信息的事件，不写 traces.jsonl，不打印用户正文或原始推理字段。debug 将错误栈另外写入标准错误，不改变结构化汇总。
+每阶段由具名 case 检查对应实现的成功、失败与边界契约；阶段 0 是已完成 Kimi Provider，本机 mock 不使用真实 key。标准输出是阶段 JSON，看失败 case 名、错误和阶段标识定位。trace 在标准错误给出 case.start、case.passed、case.failed 与带 case 信息的事件，不写 traces.jsonl，不打印用户正文或原始推理字段。debug 将错误栈另外写入标准错误，不改变结构化汇总。
 
 结果中的 stage/mode/status 指明所选阶段、算法和通过状态，total/passed/failed 是 case 计数，cases 包含具名结果与可选 error。默认异步 case 等待上限 3000 ms；--debug 会停用这层计时以便单步，工具/Provider 自身预算仍独立存在。同步阻塞不能靠 Promise 计时强制终止。
 
@@ -74,7 +79,7 @@ VS Code 可在“运行和调试”中选 [launch.json](../.vscode/launch.json) 
 
 ```sh
 node --inspect-brk --import tsx src/cli.ts check --stage 0 --mode learner --trace --debug
-node --inspect-brk --import tsx src/cli.ts chat --message '/calc (2+3)*4' --mode reference
+node --inspect-brk --import tsx src/cli.ts chat --provider demo --message '/calc (2+3)*4' --mode reference
 ```
 
 附加 Chrome 的 Node 调试器或 VS Code 调试器，打开 src 下的 TypeScript 文件设置断点。--inspect-brk 先暂停入口，继续后才执行命令；可用 Source Map 对应源码，或在学习函数中暂时写 debugger 语句。
@@ -92,22 +97,28 @@ node --inspect-brk --import tsx src/cli.ts chat --message '/calc (2+3)*4' --mode
 ## 连接器
 
 ```sh
-npm run dev -- gateway --connector jsonl --allow-user learner < examples/messages.jsonl
+npm run dev -- gateway --provider demo --mode reference --connector jsonl --allow-user learner < examples/messages.jsonl
 ```
 
 重复事件应返回 cached=true；验证新执行时更换 eventId。HTTP 启动、camelCase 请求 JSON、curl 与恢复步骤见 [Gateway 文档](05-gateway.md)。服务只用于 loopback 调试，需配置 MY_HERMES_GATEWAY_TOKEN 和 --allow-user。
 
 ## 真实模型
 
-先单独验收自己的 Kimi Provider，再让参考 Core 驱动它：
+KimiProvider 已实现，可以由参考 Core 直接驱动，不要求先完成学习算法。在根目录 `.env` 中填入 MOONSHOT_API_KEY 后：
 
 ```sh
-export MOONSHOT_API_KEY='YOUR_PLATFORM_API_KEY'
-npm run dev -- chat --provider kimi --provider-mode learner --mode reference \
-  --message '请使用工具计算 (2+3)*4' --trace
+npm run kimi:check
+npm run kimi:doctor
 ```
 
-Kimi 也接受 KIMI_API_KEY，不读取 OPENAI_API_KEY 兜底；默认国内 root 与 kimi-k3.1-pro。L0 未实现会明确失败，改 --provider-mode reference 可对照完整连接实现。--mode reference 只控制 Agent，不会替你实现 L0。显式切 --provider kimi 时重置模型/地址到 Kimi 预设，--model/--base-url 显式值优先；国际区使用对应平台 key 与 https://api.moonshot.ai/v1。
+kimi:check 使用本机 mock；kimi:doctor 不调用模型，只报告 apiKeyConfigured 布尔值和配置，不显示密钥。填好真实 key 后由你执行：
+
+```sh
+npm run kimi:test
+npm run kimi:chat
+```
+
+kimi:test 要求回复“Kimi 连接成功”，kimi:chat 启动交互；两者显式选择 Kimi 主实现和参考 Core。Kimi 也接受 KIMI_API_KEY，不读取 OPENAI_API_KEY 兜底；默认国内 root 与 kimi-k3.1-pro。--model/--base-url 显式值优先，国际区使用对应平台 key 与 https://api.moonshot.ai/v1。可用 --env-path 选择独立密钥文件。
 
 K3.1 Pro 始终推理，使用 reasoning_effort=low、max_completion_tokens=8192；不发送 K2 的 thinking 开关，也不显式修改固定采样参数。reasoning_content 对应内部 reasoningContent，必须随 assistant 历史保留和回传，最终聊天只显示 content。官方依据、任务分解与限额见 [Kimi Provider](07-kimi-provider.md)。
 
@@ -122,14 +133,15 @@ npm run check -- --all --mode reference
 npm run build
 ```
 
-完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。初始状态为 `[failed, failed, failed, failed, passed, failed]`，阶段 4 只代表提供的扩展基线，不能自动验证任意自定义插件。
+完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。L1～L5 未完成时状态为 `[passed, failed, failed, failed, passed, failed]`，阶段 0 是已完成 Kimi 主实现，阶段 4 是扩展基线，不能自动验证任意自定义插件。
 
 `npm test` 验证基础设施与参考实现回归；learner 检查直接调用学习者代码，两项分别验收。根据具体任务补充边界案例，不以默认测试通过代替练习完成。中断/超时能传播取消，不能回滚已发生的副作用，忽略 signal 的代码还可能继续；重试前检查实际结果。
 
 | 现象 | 首先检查 |
 | --- | --- |
-| ExerciseNotImplemented | 检查 L0～L5；Kimi 的 providerMode 与 Core mode 是两个独立选择 |
+| ExerciseNotImplemented | 检查 L1～L5 的 Core mode；Kimi 主实现已完成，真实调用可用参考 Core |
 | Kimi key / HTTP 401 | MOONSHOT_API_KEY/KIMI_API_KEY、区域平台、模型权限，不使用 OpenAI key 兜底 |
+| 更新 .env 后没生效 | shell 环境变量优先；确认运行目录或 --env-path 路径 |
 | 工具第二轮丢上下文 | reasoningContent 与 toolCalls 是否完整保存、持久化并转换回 wire 字段 |
 | 单阶段 failed | 查 case 名和错误，使用同一 stage 的 --trace --debug；不必先补其他阶段 |
 | --all 同时有 passed/failed | 全部阶段独立汇总；任一 failed 仍以非零退出 |

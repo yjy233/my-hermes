@@ -67,16 +67,18 @@ test('CLI offline checks pass stages 0 through 5 and never create a persistent p
   assert.equal(existsSync(home), false);
 });
 
-test('CLI Kimi learner stage reports L0 independently of unimplemented Agent algorithms', (t) => {
+test('CLI Kimi learner stage completes offline independently of unimplemented Agent algorithms', (t) => {
   const { home, invoke } = fixture(t);
   const result = invoke(['check', '--stage', '0', '--mode', 'learner', '--trace']);
-  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout.trim());
   assert.equal(report.stage, 0);
-  assert.equal(report.status, 'failed');
-  assert.ok(report.cases.some((item: { error?: { name: string; message: string } }) =>
-    item.error?.name === 'ExerciseNotImplemented' && item.error.message.includes('L0')));
-  assert.match(result.stderr, /L0/u);
+  assert.equal(report.status, 'passed');
+  assert.ok(report.total >= 10);
+  assert.equal(report.passed, report.total);
+  assert.equal(report.failed, 0);
+  assert.match(result.stderr, /case\.passed/u);
+  assert.doesNotMatch(result.stderr, /ExerciseNotImplemented/u);
   assert.doesNotMatch(result.stderr, /\bL[1-5]\b/u);
   assert.equal(existsSync(home), false);
 });

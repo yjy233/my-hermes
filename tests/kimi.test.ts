@@ -1,6 +1,7 @@
-/** 测试 Kimi 练习实现的选择、安全默认值，以及思考元数据保留协议。 */
+/** 测试 Kimi 实现的独立选择、安全默认值，以及思考元数据保留协议。 */
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
@@ -9,7 +10,6 @@ import { createProvider } from '../src/core/provider-factory.js';
 import { KimiProvider } from '../src/core/providers/kimi.js';
 import { ReferenceKimiProvider } from '../src/core/providers/kimi-reference.js';
 import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL } from '../src/core/providers/kimi-shared.js';
-import { ExerciseNotImplemented } from '../src/core/errors.js';
 import { fromWireMessage, messageSize, toWireMessage, validateModelResponse, type Message } from '../src/core/models.js';
 import { runLoop } from '../src/learning/reference.js';
 import { ToolRegistry } from '../src/core/tools.js';
@@ -20,14 +20,53 @@ const fixtureRoot = mkdtempSync(join(tmpdir(), 'hermes-kimi-tests-'));
 const noProfile = join(fixtureRoot, 'uncreated-profile');
 after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
-test('Kimi provider is a separate exercise, with reference Core not silently solving L0', async () => {
-  const settings = loadSettings(noProfile, { provider: 'kimi', mode: 'reference' });
+test('Kimi provider selection remains independent of Core mode and both implementations complete local requests', async t => {
+  const requests: { method?: string; url?: string; authorization?: string; body: unknown }[] = [];
+  const server = createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push({ method: request.method, url: request.url,
+        authorization: request.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown });
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: {
+        role: 'assistant', content: 'local Kimi answer', reasoning_content: 'local metadata',
+      } }] }));
+    })().catch(() => { response.writeHead(500); response.end(); });
+  });
+  await new Promise<void>((ready, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { server.off('error', reject); ready(); });
+  });
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const settings = loadSettings(noProfile, { provider: 'kimi', mode: 'reference',
+    baseUrl: `http://127.0.0.1:${address.port}/v1`, model: 'factory-mock-model' });
   assert.equal(settings.providerMode, 'learner');
   const provider = createProvider(settings, { MOONSHOT_API_KEY: 'mock-key' });
   assert.ok(provider instanceof KimiProvider);
-  await assert.rejects(provider.complete([{ role: 'user', content: 'hello' }], []), ExerciseNotImplemented);
+  assert.deepEqual(await provider.complete([{ role: 'user', content: 'hello' }], []), {
+    content: 'local Kimi answer', reasoningContent: 'local metadata',
+  });
   const answer = createProvider({ ...settings, mode: 'learner', providerMode: 'reference' }, { KIMI_API_KEY: 'mock-key' });
   assert.ok(answer instanceof ReferenceKimiProvider);
+  assert.deepEqual(await answer.complete([{ role: 'user', content: 'hello' }], []), {
+    content: 'local Kimi answer', reasoningContent: 'local metadata',
+  });
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, '/v1/chat/completions');
+    assert.equal(request.authorization, 'Bearer mock-key');
+    const body = request.body as Record<string, unknown>;
+    assert.equal(body.model, 'factory-mock-model');
+    assert.deepEqual(body.messages, [{ role: 'user', content: 'hello' }]);
+  }
 });
 
 test('Kimi credentials are explicit and generic OpenAI keys are not silently reused', () => {
@@ -87,11 +126,12 @@ test('stage 0 reference validates Kimi against local HTTP without live credentia
   assert.ok(result.total >= 10);
 });
 
-test('stage 0 learner leaves implementation contracts unimplemented rather than falling back', async () => {
+test('stage 0 learner validates the completed Kimi implementation against local HTTP contracts', async () => {
   const result = await runStageCases(0, 'learner', providerCases('learner'));
-  assert.equal(result.status, 'failed');
-  assert.ok(result.cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
-  assert.ok(result.cases.filter(item => item.status === 'failed').every(item => item.error?.message.includes('L0')));
+  assert.equal(result.status, 'passed', JSON.stringify(result.cases));
+  assert.ok(result.total >= 10);
+  assert.equal(result.passed, result.total);
+  assert.equal(result.failed, 0);
 });
 
 test('the learner Core stage catches discarded reasoning even when ordinary tools still work', async () => {

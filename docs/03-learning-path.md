@@ -1,6 +1,6 @@
 # 分阶段学习与实现
 
-读完 [架构](01-architecture.md)，从 `src/core/providers/kimi.ts` 的模型连接练习 L0 开始，再实现 `src/learning/exercises.ts` 的五个算法 L1～L5。外围基础设施已经实现，参考答案分别在 `kimi-reference.ts` 与 `learning/reference.ts`，建议自己实现后再对照。
+读完 [架构](01-architecture.md)，先阅读 `src/core/providers/kimi.ts` 中已完成的模型连接 L0，再实现 `src/learning/exercises.ts` 的五个算法 L1～L5。Kimi 主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
 
 ```sh
 npm install
@@ -9,15 +9,15 @@ npm run check -- --all --mode reference
 npm run dev -- check --stage 0 --mode learner
 ```
 
-前三条应成功；最后一条在未完成练习时输出 failed case，错误指出 L0。`learner` 不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
+以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`。L1～L5 的 learner 算法尚未实现时会明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
 
 `check/demo` 的 mode 优先级为命令行 `--mode` → 所选 profile 的 `config.json` → 默认 `reference`。profile 由 `--home` 或 `MY_HERMES_HOME` 选择。检查只读取配置，运行数据放临时目录，不初始化日常 profile，不调用其真实模型，也不加载其插件。
 
 ## 阶段总览
 
-| 阶段 | 学习者修改 | 推荐断点 | 可测验收 | 独立命令 |
+| 阶段 | 当前状态 / 学习任务 | 推荐断点 | 可测验收 | 独立命令 |
 | --- | --- | --- | --- | --- |
-| 0 Kimi Provider | L0 `KimiProvider.complete` | `src/core/providers/kimi.ts`、`src/core/models.ts` | mock HTTP 请求、文本/工具/推理字段往返、错误与取消 | `check --stage 0 --mode learner` |
+| 0 Kimi Provider | 已实现，阅读与回归 | `src/core/providers/kimi.ts`、`src/core/models.ts` | mock HTTP 请求、文本/工具/推理字段往返、错误与取消 | `check --stage 0 --mode learner` |
 | 1 Core | L1 `runLoop` | `src/learning/exercises.ts`、`src/core/tools.ts` | 最终文本、工具结果与 ID 配对、循环预算及非法响应处理 | `check --stage 1 --mode learner` |
 | 2 Memory | L2 `compactHistory`、L3 `selectMemories` | `src/learning/exercises.ts`、`src/memory/store.ts` | 完整轮次预算、不修改输入、排序与条数限制、记忆隔离 | `check --stage 2 --mode learner` |
 | 3 Gateway | L4 `sessionKey` | `src/learning/exercises.ts`、`src/gateway/router.ts` | 三维路由稳定无碰撞、同事件只执行一次、用户隔离 | `check --stage 3 --mode learner` |
@@ -52,15 +52,15 @@ npm 默认还会显示脚本启动信息；需要机器逐行解析 JSON 时，�
 npm run dev -- check --all --mode learner
 ```
 
-即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，进程退出码非零。初始练习未实现时，状态依次为 `[failed, failed, failed, failed, passed, failed]`；阶段 4 通过代表扩展基线可运行，其余失败明确保留 TODO，没有使用参考答案兜底。
+即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L1～L5 未完成时状态为 `[passed, failed, failed, failed, passed, failed]`：阶段 0 是已完成 Kimi 主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
 
 完整 `chat --mode learner` 需要 L4、L2、L1；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；未完成的召回算法会形成工具错误。随时切回 `--mode reference` 检查外围系统。
 
 ## 阶段 0：Kimi 模型连接（L0）
 
-实现 `src/core/providers/kimi.ts` 的 `KimiProvider.complete(messages, tools, signal?)`，返回 `Promise<ModelResponse>`。先按 [Kimi 专题](07-kimi-provider.md) 实现请求、响应、工具调用、推理字段和取消；使用本机 mock 验收，不需要真实 key，也不调用在线服务。
+`src/core/providers/kimi.ts` 的 `KimiProvider.complete(messages, tools, signal?)` 已实现，返回 `Promise<ModelResponse>`，不依赖对照版兜底。通过 [Kimi 专题](07-kimi-provider.md) 阅读请求、响应、工具、推理字段与取消；本机 mock 回归不需要真实 key，也不调用在线服务。
 
-`check --stage 0 --mode learner/reference` 直接选择 Provider 实现，与真实运行时的 --provider-mode 分开。真实组合时用 `chat --provider kimi --provider-mode learner --mode reference`，可先调试自己的模型连接，Agent 的 L1～L5 使用参考算法；它们不会相互隐式切换。
+`check --stage 0 --mode learner/reference` 分别检查已完成主实现或对照版，与运行时 --provider-mode 分开。根目录 `.env` 填入密钥后，可用 `npm run kimi:doctor` 检查配置，再由你执行 `npm run kimi:test` 或 `npm run kimi:chat`；这些真实调用使用参考 Core，L1～L5 未完成也可运行。阶段回归本身始终离线。
 
 K3.1 Pro 的 `reasoning_content` 必须映射成内部 reasoningContent 并随完整 assistant 历史往返；最终 CLI 只显示 content，不能把推理内容拼到用户答复或 trace。检查预算、错误脱敏与工具 ID 配对，完整契约见专题。
 

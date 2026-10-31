@@ -20,7 +20,7 @@ for (const stage of [0, 1, 2, 3, 4, 5]) test(`stage ${stage} reference has named
   assert.equal(events.filter(event => event === 'case.passed').length, result.total);
 });
 
-for (const stage of [0, 1, 2, 3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
+for (const stage of [1, 2, 3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
   const result = await checkStage(stage, 'learner');
   assert.equal(result.status, 'failed');
   assert.ok(result.cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
@@ -31,14 +31,13 @@ test('stage 4 is independent of unimplemented exercise algorithms', async () => 
   assert.equal((await checkStage(4, 'learner')).status, 'passed');
 });
 
-test('Kimi Provider stage 0 selects its own learner implementation independently of L1 through L5', async () => {
+test('completed Kimi Provider stage 0 passes independently of Core exercises L1 through L5', async () => {
   const reference = await checkStage(0, 'reference', {}, loadAlgorithms('learner'));
   assert.equal(reference.status, 'passed', JSON.stringify(reference.cases));
   const learner = await checkStage(0, 'learner', {}, loadAlgorithms('reference'));
-  assert.equal(learner.status, 'failed');
-  const errors = learner.cases.flatMap(item => item.error ? [item.error] : []);
-  assert.ok(errors.some(error => error.name === 'ExerciseNotImplemented' && /\bL0\b/u.test(error.message)));
-  assert.ok(errors.every(error => !/\bL[1-5]\b/u.test(error.message)));
+  assert.equal(learner.status, 'passed', JSON.stringify(learner.cases));
+  assert.equal(learner.passed, learner.total);
+  assert.equal(learner.failed, 0);
 });
 
 test('a learner loop that passes the happy path still fails tool/termination contracts', async () => {
@@ -95,9 +94,10 @@ test('CLI --all reports all learner stages, emits trace on stderr and leaves the
     assert.equal(child.status, 1, child.stderr);
     const reports = child.stdout.trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(reports.map(item => item.stage), [0, 1, 2, 3, 4, 5]);
-    assert.deepEqual(reports.map(item => item.status), ['failed', 'failed', 'failed', 'failed', 'passed', 'failed']);
+    assert.deepEqual(reports.map(item => item.status), ['passed', 'failed', 'failed', 'failed', 'passed', 'failed']);
     assert.match(child.stderr, /case\.start/); assert.match(child.stderr, /case\.failed/);
-    assert.match(child.stderr, /L0/); assert.match(child.stderr, /L1/); assert.match(child.stderr, /L2/); assert.match(child.stderr, /L4/); assert.match(child.stderr, /L5/);
+    assert.match(child.stderr, /L0/); assert.match(child.stderr, /L1/); assert.match(child.stderr, /L2/);
+    assert.match(child.stderr, /L3/); assert.match(child.stderr, /L4/); assert.match(child.stderr, /L5/);
     assert.equal(existsSync(home), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

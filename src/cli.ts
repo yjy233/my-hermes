@@ -17,11 +17,13 @@ import { loadAlgorithms, type Mode } from './learning/index.js';
 import { LongTermMemory, SessionStore } from './memory/index.js';
 import { ProfileLock } from './profile-lock.js';
 import { SkillCatalog } from './skills/index.js';
+import { loadEnvironmentFile } from './environment.js';
 
 function parse(argv: string[]) {
   return parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
     home: { type: 'string' }, mode: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' },
     'provider-mode': { type: 'string' },
+    'env-path': { type: 'string' },
     'base-url': { type: 'string' }, plugin: { type: 'string', multiple: true },
     'auto-reflect': { type: 'boolean' }, 'no-auto-reflect': { type: 'boolean' },
     trace: { type: 'boolean' }, debug: { type: 'boolean' },
@@ -42,7 +44,7 @@ Commands:
   skills list | skills read NAME
   evolve list | evolve show ID | evolve approve ID --name NAME --description TEXT
 Common: --home PATH --mode MODE --provider demo|compatible|kimi --provider-mode learner|reference
-        --model NAME --base-url URL
+        --model NAME --base-url URL --env-path PATH
         --plugin PATH (repeatable) --auto-reflect --no-auto-reflect --trace --debug
 Examples: npm run dev -- chat --message '/calc (2+3)*4' --trace
           npm run check -- --all --mode reference`;
@@ -226,7 +228,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const controller = new AbortController();
   const stop = () => controller.abort(new Error('Interrupted'));
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
-  try { parsed = parse(argv); await execute(parsed, controller.signal); return controller.signal.aborted ? 130 : 0; }
+  try {
+    parsed = parse(argv);
+    loadEnvironmentFile(parsed.values['env-path']);
+    await execute(parsed, controller.signal);
+    return controller.signal.aborted ? 130 : 0;
+  }
   catch (error) {
     if (controller.signal.aborted) return 130;
     console.error(parsed?.values.debug && error instanceof Error ? error.stack : error instanceof Error ? `${error.name}: ${error.message}` : 'Command failed');

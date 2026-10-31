@@ -1,0 +1,13 @@
+{
+  "mode": "reference",
+  "provider": "kimi",
+  "providerMode": "learner",
+  "model": "kimi-k3.1-pro",
+  "baseUrl": "https://api.moonshot.cn/v1",
+  "providerTimeoutMs": 60000,
+  "turnTimeoutMs": 180000,
+  "maxSteps": 8,
+  "contextChars": 64000,
+  "autoReflect": false,
+  "plugins": []
+}

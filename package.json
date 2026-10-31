@@ -23,11 +23,16 @@
     "docs",
     "examples",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    ".env.example"
   ],
   "scripts": {
     "dev": "tsx src/cli.ts",
     "check": "tsx src/cli.ts check",
+    "kimi:check": "tsx src/cli.ts check --stage 0 --mode learner",
+    "kimi:doctor": "tsx src/cli.ts doctor --provider kimi",
+    "kimi:test": "tsx src/cli.ts chat --provider kimi --provider-mode learner --mode reference --message \"请只回复：Kimi 连接成功\"",
+    "kimi:chat": "tsx src/cli.ts chat --provider kimi --provider-mode learner --mode reference",
     "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
