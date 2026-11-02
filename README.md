@@ -23,7 +23,7 @@ npm run kimi:test
 npm run kimi:chat
 ```
 
-测试要求只回复“Kimi 连接成功”，聊天脚本使用已经完成的 Kimi 主实现与参考 Core，不要求先补齐 L1～L5。模型、地址和超时配置在本地 `.hermes-lab/config.json`，示例见 [kimi.json](examples/config/kimi.json)；已有配置不被覆盖。CLI 自动读当前目录 `.env`，支持 --env-path，shell 环境优先。完整说明见 [Kimi 文档](docs/07-kimi-provider.md)。本次只完成离线协议验证，尚未使用你的密钥在线联调。
+测试要求只回复“Kimi 连接成功”，聊天脚本使用已经完成的 Kimi 主实现与参考 Core，不要求先补齐 L2～L5。模型、地址和超时配置在本地 `.hermes-lab/config.json`，示例见 [kimi.json](examples/config/kimi.json)；已有配置不被覆盖。CLI 自动读当前目录 `.env`，支持 --env-path，shell 环境优先。完整说明见 [Kimi 文档](docs/07-kimi-provider.md)。本次只完成离线协议验证，尚未使用你的密钥在线联调。
 
 ## 离线观察框架
 
@@ -44,18 +44,18 @@ npm run build
 - Core 的 `--mode reference/learner` 选择完整算法或 [exercises.ts](src/learning/exercises.ts) 中的 L1～L5。
 - Kimi 的 `--provider-mode learner/reference` 独立选择 [kimi.ts](src/core/providers/kimi.ts) 中已完成的主实现或对照版；主实现不会回退到参考版。
 
-基础设施、Kimi 连接、参考算法与阶段验收均已提供。**L1～L5 保留给学习者实现**。每个阶段可以独立调试，不要求先完成整个 Agent。
+基础设施、Kimi 连接和 L1 runLoop 已实现，可阅读中文注释、调试并与参考版对照。**L2～L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
 
 | 阶段 | 学习内容 | 当前状态 / 学习任务 | 独立验收 |
 | --- | --- | --- | --- |
 | 0 | Kimi：真实模型请求、工具与推理字段 | 已实现，阅读与协议回归 | `npm run kimi:check` |
-| 1 | Core：模型、工具、观察、终止 | L1 `runLoop` | `npm run dev -- check --stage 1 --mode learner` |
+| 1 | Core：模型、工具、观察、终止 | L1 已实现，阅读 / 调试 / 对照 | `npm run dev -- check --stage 1 --mode learner` |
 | 2 | 短期上下文、长期记忆、历史召回 | L2 `compactHistory`、L3 `selectMemories` | `npm run dev -- check --stage 2 --mode learner` |
 | 3 | Gateway：授权、隔离、幂等 | L4 `sessionKey` | `npm run dev -- check --stage 3 --mode learner` |
 | 4 | Skills 与可信 Plugin | 添加自己的 Skill / Tool Plugin | `npm run dev -- check --stage 4 --mode learner` |
 | 5 | 自进化：成功轨迹到技能候选 | L5 `reflect` | `npm run dev -- check --stage 5 --mode learner` |
 
-`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。完整 learner Agent 需要 L1/L2/L4，召回使用 L3，反思使用 L5；也可以先用参考 Core 独立调试 L0。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
+`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。L1 已完成，完整 learner 聊天仍需补齐 L2/L4，召回使用 L3，反思使用 L5；下一步可独立实现阶段 2 的上下文与召回。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
 
 每阶段先看参考，再调试自己的代码；将阶段数字换成 0～5：
 
@@ -65,7 +65,7 @@ npm run dev -- check --stage 0 --mode learner --trace --debug
 npm run dev -- check --all --mode learner
 ```
 
-结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；L1～L5 未完成时状态为 `[passed, failed, failed, failed, passed, failed]`，不会回退到答案。阶段 0 通过的是已完成 Kimi 主实现，阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
+结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；L2～L5 未完成时状态为 `[passed, passed, failed, failed, passed, failed]`，不会回退到答案。阶段 0/1 是已完成主实现，阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
 
 调试 TypeScript：
 

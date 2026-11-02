@@ -40,7 +40,7 @@ npm run dev -- doctor --provider kimi --env-path ./.env.local
 | --- | --- |
 | provider: kimi | 使用 Kimi 连接器 |
 | providerMode: learner | 使用 kimi.ts 中已经完成的主实现；reference 选择独立对照版 |
-| mode: reference | 使用完整 Agent 算法，L1～L5 未完成也可聊天 |
+| mode: reference | 使用完整 Agent 算法，L2～L5 未完成也可聊天 |
 | model: kimi-k3.1-pro | 本项目验证过协议的模型基线 |
 | baseUrl | 国内 https://api.moonshot.cn/v1；国际 https://api.moonshot.ai/v1 |
 | providerTimeoutMs | 单次模型请求超时，通用默认 30000 ms，Kimi 示例使用 60000 ms |
@@ -94,4 +94,4 @@ npm run dev -- chat --provider kimi --provider-mode learner --mode reference \
   --message '请使用计算工具计算 (2+3)*4，并核对结果' --trace
 ```
 
-L1～L5 尚未实现时使用 --mode reference；完成后可切 learner 测试自己的 Agent。在线结果还取决于账户权限、网络与服务响应，离线协议通过不能替代你填入真实 key 后的在线联调。
+L2～L5 尚未实现时使用 --mode reference；完成后可切 learner 测试自己的 Agent。在线结果还取决于账户权限、网络与服务响应，离线协议通过不能替代你填入真实 key 后的在线联调。

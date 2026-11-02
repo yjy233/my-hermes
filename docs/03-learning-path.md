@@ -1,6 +1,6 @@
 # 分阶段学习与实现
 
-读完 [架构](01-architecture.md)，先阅读 `src/core/providers/kimi.ts` 中已完成的模型连接 L0，再实现 `src/learning/exercises.ts` 的五个算法 L1～L5。Kimi 主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
+读完 [架构](01-architecture.md)，先阅读已完成的 Kimi 连接 L0 和 `src/learning/exercises.ts` 中带中文注释的 L1 runLoop，再实现 L2～L5。两个主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
 
 ```sh
 npm install
@@ -9,7 +9,7 @@ npm run check -- --all --mode reference
 npm run dev -- check --stage 0 --mode learner
 ```
 
-以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`。L1～L5 的 learner 算法尚未实现时会明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
+以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`；阶段 1 的 learner 也应通过。L2～L5 未实现时明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
 
 `check/demo` 的 mode 优先级为命令行 `--mode` → 所选 profile 的 `config.json` → 默认 `reference`。profile 由 `--home` 或 `MY_HERMES_HOME` 选择。检查只读取配置，运行数据放临时目录，不初始化日常 profile，不调用其真实模型，也不加载其插件。
 
@@ -18,7 +18,7 @@ npm run dev -- check --stage 0 --mode learner
 | 阶段 | 当前状态 / 学习任务 | 推荐断点 | 可测验收 | 独立命令 |
 | --- | --- | --- | --- | --- |
 | 0 Kimi Provider | 已实现，阅读与回归 | `src/core/providers/kimi.ts`、`src/core/models.ts` | mock HTTP 请求、文本/工具/推理字段往返、错误与取消 | `check --stage 0 --mode learner` |
-| 1 Core | L1 `runLoop` | `src/learning/exercises.ts`、`src/core/tools.ts` | 最终文本、工具结果与 ID 配对、循环预算及非法响应处理 | `check --stage 1 --mode learner` |
+| 1 Core | L1 已实现，阅读 / 调试 / 对照 | `src/learning/exercises.ts`、`src/core/tools.ts` | 最终文本、工具结果与 ID 配对、循环预算及非法响应处理 | `check --stage 1 --mode learner` |
 | 2 Memory | L2 `compactHistory`、L3 `selectMemories` | `src/learning/exercises.ts`、`src/memory/store.ts` | 完整轮次预算、不修改输入、排序与条数限制、记忆隔离 | `check --stage 2 --mode learner` |
 | 3 Gateway | L4 `sessionKey` | `src/learning/exercises.ts`、`src/gateway/router.ts` | 三维路由稳定无碰撞、同事件只执行一次、用户隔离 | `check --stage 3 --mode learner` |
 | 4 Extensions | 无必填算法；扩展自己的实例 | `src/skills/catalog.ts`、`src/plugins/manager.ts` | 内置 Skill 按需读取、测试插件注册/执行与扩展边界 | `check --stage 4 --mode learner` |
@@ -52,21 +52,21 @@ npm 默认还会显示脚本启动信息；需要机器逐行解析 JSON 时，�
 npm run dev -- check --all --mode learner
 ```
 
-即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L1～L5 未完成时状态为 `[passed, failed, failed, failed, passed, failed]`：阶段 0 是已完成 Kimi 主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
+即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L2～L5 未完成时状态为 `[passed, passed, failed, failed, passed, failed]`：阶段 0/1 是已完成主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
 
-完整 `chat --mode learner` 需要 L4、L2、L1；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；未完成的召回算法会形成工具错误。随时切回 `--mode reference` 检查外围系统。
+L1 已完成，但完整 `chat --mode learner` 仍需补齐 L4 和 L2；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；未完成的召回算法会形成工具错误。可用 `--mode reference` 运行完整系统，下一步独立实现阶段 2 的 L2/L3。
 
 ## 阶段 0：Kimi 模型连接（L0）
 
 `src/core/providers/kimi.ts` 的 `KimiProvider.complete(messages, tools, signal?)` 已实现，返回 `Promise<ModelResponse>`，不依赖对照版兜底。通过 [Kimi 专题](07-kimi-provider.md) 阅读请求、响应、工具、推理字段与取消；本机 mock 回归不需要真实 key，也不调用在线服务。
 
-`check --stage 0 --mode learner/reference` 分别检查已完成主实现或对照版，与运行时 --provider-mode 分开。根目录 `.env` 填入密钥后，可用 `npm run kimi:doctor` 检查配置，再由你执行 `npm run kimi:test` 或 `npm run kimi:chat`；这些真实调用使用参考 Core，L1～L5 未完成也可运行。阶段回归本身始终离线。
+`check --stage 0 --mode learner/reference` 分别检查已完成主实现或对照版，与运行时 --provider-mode 分开。根目录 `.env` 填入密钥后，可用 `npm run kimi:doctor` 检查配置，再由你执行 `npm run kimi:test` 或 `npm run kimi:chat`；这些真实调用使用参考 Core，L2～L5 未完成也可运行。阶段回归本身始终离线。
 
 K3.1 Pro 的 `reasoning_content` 必须映射成内部 reasoningContent 并随完整 assistant 历史往返；最终 CLI 只显示 content，不能把推理内容拼到用户答复或 trace。检查预算、错误脱敏与工具 ID 配对，完整契约见专题。
 
 ## 阶段 1：有界 Agent Loop（L1）
 
-先读 `src/core/models.ts`、`src/core/providers.ts` 和 `src/core/tools.ts`，再实现：
+`src/learning/exercises.ts` 中的 runLoop 已实现，并带详细中文注释。先读 `src/core/models.ts`、`src/core/providers.ts` 和 `src/core/tools.ts`，再单步阅读主实现、对照 reference.ts：
 
 ```ts
 runLoop(provider, registry, messages, maxSteps, emit, signal?): Promise<Message[]>
@@ -81,13 +81,23 @@ runLoop(provider, registry, messages, maxSteps, emit, signal?): Promise<Message[
 5. 达到 `maxSteps` 仍无最终答复时抛 `StepLimitExceeded`，不能把工具结果冒充最终答复；最后一步仍请求工具时不启动新的工具副作用。共享异常在 `core/errors.ts`。
 6. 在合适位置检查 `signal?.throwIfAborted()`，向 Provider 和 Registry 传递 signal，并用 `emit(event, payload)` 发出观察事件。
 
+阅读时先分清 context 和 delta：context 是发给下一次模型请求的完整工作上下文，delta 只累计本轮新 assistant/tool 消息。两者都会追加新消息，但返回值只有 delta；完整轮次由外层 Agent 提交数据库，runLoop 不重复返回旧历史。
+
+同一响应可以同时有文本和工具调用，此时仍要执行工具，不能看到文本就提前结束。assistant 消息须保留 reasoningContent，执行结果按调用顺序追加并保留 call ID，下一次模型才能观察结果。maxSteps 限制模型请求次数；最后一步若仍要求工具，直接抛错，不再开始新的副作用。父级 signal 在请求前、等待中或工具执行后取消时，应传播原始取消原因，不能包装成普通工具错误或最终答复。
+
+```sh
+npm run dev -- check --stage 1 --mode learner --trace
+```
+
+当前阶段 1 的 9 个具名回归均应通过；可以在 text/tool 共存、context/delta 更新、结果 ID 配对和取消检查处设置断点。L1 通过后继续下面的 L2/L3，不代表完整 learner 聊天已经可用。
+
 离线验收 `/calc (2+3)*4` 应产生 calculator 调用、`{"ok":true,"result":20}` 的工具返回，再得到最终文本。主动测试未知工具、非法表达式、超时、重复 ID、模型持续请求工具等情况。Registry 会把普通工具失败包装为 `ok: false`，让模型观察错误后继续决策；取消应保留取消语义。
 
 在 `exercises.ts` 的模型返回处及 `ToolRegistry.execute` 设置断点，检查 `assistant(toolCalls) → tool(toolCallId) → assistant`。内部字段由 `toWireMessage/fromWireMessage` 转成模型 API 所需的 snake_case，学习算法不用自行拼 HTTP payload。
 
 ## 阶段 2：短期上下文与长期记忆（L2/L3）
 
-先读 `src/memory/store.ts`、`src/memory/long-term.ts` 与 `src/core/builtin-tools.ts`，区分完整历史和下一次模型可见上下文。
+这是当前下一步练习：实现 `compactHistory` 与 `selectMemories`。先读 `src/memory/store.ts`、`src/memory/long-term.ts` 与 `src/core/builtin-tools.ts`，区分完整历史和下一次模型可见上下文。
 
 L2 `compactHistory(messages, maxChars)`：
 

@@ -375,11 +375,13 @@ test('reflection rejects orphaned and incomplete tool observations', () => {
   assert.equal(reflect([trace[0], trace[1], toolReply('{"ok":true}', 'wrong-id'), trace[3]]), null);
 });
 
-test('learner mode raises the named exercise rather than falling back to reference', async () => {
+test('learner mode runs completed L1 while remaining exercises still reject without a fallback', async () => {
   const learner = loadAlgorithms('learner');
-  await assert.rejects(() => learner.runLoop(scripted([{ content: 'would work in reference' }]),
-    new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop), ExerciseNotImplemented);
-  assert.throws(() => learner.compactHistory([{ role: 'system', content: 'x' }], 1000), /L2/);
+  const completed = await learner.runLoop(scripted([{ content: 'learner works' }]),
+    new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
+  assert.deepEqual(completed, [{ role: 'assistant', content: 'learner works' }]);
+  assert.throws(() => learner.compactHistory([{ role: 'system', content: 'x' }], 1000),
+    error => error instanceof ExerciseNotImplemented && /L2/.test(error.message));
   assert.throws(() => learner.selectMemories('query', [], 1), /L3/);
   assert.throws(() => learner.sessionKey('a', 'b', 'c'), /L4/);
   assert.throws(() => learner.reflect([]), /L5/);

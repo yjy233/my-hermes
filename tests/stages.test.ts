@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { ExerciseNotImplemented } from '../src/core/errors.js';
 import { checkStage } from '../src/lab.js';
 import { loadAlgorithms } from '../src/learning/index.js';
 import { runStageCases } from '../src/stages/runner.js';
@@ -20,11 +21,19 @@ for (const stage of [0, 1, 2, 3, 4, 5]) test(`stage ${stage} reference has named
   assert.equal(events.filter(event => event === 'case.passed').length, result.total);
 });
 
-for (const stage of [1, 2, 3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
+for (const stage of [2, 3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
   const result = await checkStage(stage, 'learner');
   assert.equal(result.status, 'failed');
   assert.ok(result.cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
   assert.ok(result.cases.every(item => item.name));
+});
+
+test('completed learner loop passes all nine Core contracts independently of the remaining exercises', async () => {
+  const result = await checkStage(1, 'learner');
+  assert.equal(result.status, 'passed', JSON.stringify(result.cases));
+  assert.equal(result.total, 9);
+  assert.equal(result.passed, result.total);
+  assert.equal(result.failed, 0);
 });
 
 test('stage 4 is independent of unimplemented exercise algorithms', async () => {
@@ -94,7 +103,7 @@ test('CLI --all reports all learner stages, emits trace on stderr and leaves the
     assert.equal(child.status, 1, child.stderr);
     const reports = child.stdout.trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(reports.map(item => item.stage), [0, 1, 2, 3, 4, 5]);
-    assert.deepEqual(reports.map(item => item.status), ['passed', 'failed', 'failed', 'failed', 'passed', 'failed']);
+    assert.deepEqual(reports.map(item => item.status), ['passed', 'passed', 'failed', 'failed', 'passed', 'failed']);
     assert.match(child.stderr, /case\.start/); assert.match(child.stderr, /case\.failed/);
     assert.match(child.stderr, /L0/); assert.match(child.stderr, /L1/); assert.match(child.stderr, /L2/);
     assert.match(child.stderr, /L3/); assert.match(child.stderr, /L4/); assert.match(child.stderr, /L5/);
@@ -102,9 +111,15 @@ test('CLI --all reports all learner stages, emits trace on stderr and leaves the
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('unimplemented learner loop cannot pass a rejection contract merely by throwing TODO', async () => {
-  const result = await checkStage(1, 'learner');
+test('an injected TODO loop cannot pass a rejection contract merely by throwing ExerciseNotImplemented', async () => {
+  const result = await checkStage(1, 'learner', {}, {
+    ...loadAlgorithms('reference'),
+    async runLoop() { throw new ExerciseNotImplemented('L1: injected TODO loop'); },
+  });
+  assert.equal(result.status, 'failed');
   assert.equal(result.passed, 0, JSON.stringify(result.cases));
+  assert.equal(result.failed, result.total);
+  assert.equal(result.cases.find(item => item.name === 'L1/reject-duplicate-call-ids')?.status, 'failed');
 });
 
 test('debug mode stays cancelable even when a learner promise ignores its signal', async () => {
