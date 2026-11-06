@@ -189,6 +189,8 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     const provider = createProvider(settings);
     const agent = new Agent({ provider, store, memory: new LongTermMemory(resolve(settings.home, 'memory')),
       skills: catalogFor(settings), mode: settings.mode, maxSteps: settings.maxSteps, contextChars: settings.contextChars,
+      compression: settings.compression,
+      summaryProvider: settings.compression.summaryModel ? createProvider({ ...settings, model: settings.compression.summaryModel }) : undefined,
       turnTimeoutMs: settings.turnTimeoutMs, plugins: settings.plugins, autoReflect: settings.autoReflect,
       evolution: new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills')),
       emit: values.trace ? traceWriter(settings.home) : undefined });

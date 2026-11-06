@@ -11,6 +11,7 @@
 | [05 Gateway](05-gateway.md) | 事件协议、连接器、授权、重试和锁恢复 |
 | [06 调试](06-debugging.md) | npm 命令、配置、Node Inspector、模型接入与排查 |
 | [07 Kimi Provider](07-kimi-provider.md) | L0 模型连接练习、官方协议、离线验收与真实调用 |
+| [08 上下文压缩](08-context-compression.md) | 摘要 prompt、头尾保护、异常回退、冷却与持久化 |
 
 ![架构总览](images/architecture.png)
 

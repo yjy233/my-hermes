@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { assertFiniteJson, type Message } from '../core/models.js';
+import { initialCompressionState, type CompressionState } from '../core/compression/settings.js';
 
 export interface Session {
   id: string;
@@ -13,6 +14,7 @@ export interface Session {
 }
 export interface SessionRecord extends Session { createdAt: string; messageCount: number }
 export interface MemoryHit { sessionId: string; content: string; score: number }
+export interface ContextCheckpoint { messages: Message[]; state: CompressionState }
 
 interface SessionRow { id: string; session_key: string; scope: string; system_prompt: string | null }
 
@@ -36,7 +38,23 @@ function parseMessage(payload: string): Message {
   if (message.reasoningContent !== undefined && typeof message.reasoningContent !== 'string') {
     throw new Error('Invalid stored reasoning content');
   }
+  if (message.contextSummary !== undefined && (!message.contextSummary || typeof message.contextSummary.body !== 'string' ||
+      typeof message.contextSummary.hasUserTurn !== 'boolean' || (message.contextSummary.originalContent !== undefined &&
+        typeof message.contextSummary.originalContent !== 'string'))) throw new Error('Invalid stored summary marker');
   return message;
+}
+
+function serializeMessage(message: Message): string {
+  const clean: Message = { role: message.role, content: message.content,
+    ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.reasoningContent !== undefined ? { reasoningContent: message.reasoningContent } : {}),
+    ...(message.contextSummary ? { contextSummary: message.contextSummary } : {}),
+  };
+  assertFiniteJson(clean);
+  const payload = JSON.stringify(clean);
+  parseMessage(payload);
+  return payload;
 }
 
 export class SessionStore {
@@ -68,6 +86,12 @@ export class SessionStore {
       );
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, id);
       CREATE INDEX IF NOT EXISTS sessions_scope ON sessions(scope);
+      CREATE TABLE IF NOT EXISTS context_checkpoints (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+        payload TEXT,
+        message_count INTEGER NOT NULL DEFAULT -1,
+        compression_state TEXT NOT NULL
+      );
     `);
   }
 
@@ -101,26 +125,49 @@ export class SessionStore {
     ).all(id).map(row => parseMessage(String(row.payload)));
   }
 
-  appendMessages(id: string, messages: Message[]): void {
+  /** 工作上下文只在与原始历史水位匹配时采用；旧库和外部追加自动回到完整历史。 */
+  loadContextMessages(id: string): Message[] {
+    const row = this.database.prepare('SELECT payload, message_count FROM context_checkpoints WHERE session_id = ?').get(id);
+    const count = this.database.prepare('SELECT COUNT(*) AS count FROM messages WHERE session_id = ?').get(id)!;
+    if (!row?.payload || Number(row.message_count) !== Number(count.count)) return this.loadMessages(id);
+    const payloads: unknown = JSON.parse(String(row.payload));
+    if (!Array.isArray(payloads)) throw new Error('Invalid context checkpoint');
+    return payloads.map(payload => parseMessage(JSON.stringify(payload)));
+  }
+
+  loadCompressionState(id: string): CompressionState {
+    const row = this.database.prepare('SELECT compression_state FROM context_checkpoints WHERE session_id = ?').get(id);
+    if (!row) return initialCompressionState();
+    const state = JSON.parse(String(row.compression_state)) as CompressionState;
+    if (!state || ![state.cooldownUntil, state.failures, state.nextAttemptChars].every(value => Number.isFinite(value) && value >= 0) ||
+        (state.lastFailure !== undefined && !['access', 'network', 'timeout', 'overload', 'empty', 'truncated', 'invalid', 'other'].includes(state.lastFailure))) {
+      throw new Error('Invalid compression state');
+    }
+    return state;
+  }
+
+  /** 失败只更新冷却状态，不发布未完成回合的摘要或消息。 */
+  saveCompressionState(id: string, state: CompressionState): void {
+    this.database.prepare('INSERT INTO context_checkpoints (session_id, compression_state) VALUES (?, ?) '
+      + 'ON CONFLICT(session_id) DO UPDATE SET compression_state = excluded.compression_state').run(id, JSON.stringify(state));
+  }
+
+  appendMessages(id: string, messages: Message[], checkpoint?: ContextCheckpoint): void {
     // 开始事务前先序列化，避免只写入畸形轮次的一部分。
-    const serialized = messages.map(message => {
-      const clean: Message = {
-        role: message.role, content: message.content,
-        ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
-        ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
-        ...(message.reasoningContent !== undefined ? { reasoningContent: message.reasoningContent } : {}),
-      };
-      assertFiniteJson(clean);
-      const payload = JSON.stringify(clean);
-      parseMessage(payload);
-      return { payload, content: message.content };
-    });
+    const serialized = messages.map(message => ({ payload: serializeMessage(message), content: message.content }));
+    const active = checkpoint ? '[' + checkpoint.messages.map(serializeMessage).join(',') + ']' : undefined;
     const insert = this.database.prepare(
       'INSERT INTO messages (session_id, payload, content) VALUES (?, ?, ?)',
     );
     this.database.exec('BEGIN IMMEDIATE');
     try {
       for (const { payload, content } of serialized) insert.run(id, payload, content);
+      if (checkpoint && active !== undefined) {
+        const count = this.database.prepare('SELECT COUNT(*) AS count FROM messages WHERE session_id = ?').get(id)!;
+        this.database.prepare('INSERT INTO context_checkpoints (session_id, payload, message_count, compression_state) VALUES (?, ?, ?, ?) '
+          + 'ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, message_count = excluded.message_count, '
+          + 'compression_state = excluded.compression_state').run(id, active, Number(count.count), JSON.stringify(checkpoint.state));
+      }
       this.database.exec('COMMIT');
     } catch (error) {
       this.database.exec('ROLLBACK');

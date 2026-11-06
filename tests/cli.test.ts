@@ -108,7 +108,7 @@ test('CLI honors configured learner mode and explicit override without falling b
   writeFileSync(configPath, JSON.stringify(config));
   const stage = invoke(['check', '--stage', '2', '--mode', 'learner']);
   assert.notEqual(stage.status, 0);
-  assert.match(stage.stderr, /L2/u);
+  assert.match(stage.stderr, /L3/u);
   const chat = invoke(['chat', '--message', 'hello']);
   assert.notEqual(chat.status, 0);
   assert.match(chat.stderr, /ExerciseNotImplemented/u);
@@ -116,7 +116,7 @@ test('CLI honors configured learner mode and explicit override without falling b
   assert.equal(chat.stdout.includes('[demo]'), false);
   const configured = invoke(['check', '--stage', '2']);
   assert.notEqual(configured.status, 0);
-  assert.match(configured.stderr, /L2/u);
+  assert.match(configured.stderr, /L3/u);
   const override = invoke(['check', '--all', '--mode', 'reference']);
   assert.equal(override.status, 0, override.stderr);
   const retained = JSON.parse(readFileSync(configPath, 'utf8'));

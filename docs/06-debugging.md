@@ -133,13 +133,13 @@ npm run check -- --all --mode reference
 npm run build
 ```
 
-完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。当前 L0/L1 已完成，L2～L5 未完成时状态为 `[passed, passed, failed, failed, passed, failed]`。阶段 1 可独立用 `check --stage 1 --mode learner --trace` 阅读与调试；完整 learner 聊天仍需 L2/L4，下一步可先验收阶段 2 的 L2/L3。阶段 4 只是扩展基线，不能自动验证任意自定义插件。
+完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。当前 L0/L1/L2 已完成，L3～L5 未完成时状态为 `[passed, passed, failed, failed, passed, failed]`。阶段 1 可独立用 `check --stage 1 --mode learner --trace` 阅读与调试；完整 learner 聊天仍需 L4，下一步可先验收阶段 2 的 L2/L3。阶段 4 只是扩展基线，不能自动验证任意自定义插件。
 
 `npm test` 验证基础设施与参考实现回归；learner 检查直接调用学习者代码，两项分别验收。根据具体任务补充边界案例，不以默认测试通过代替练习完成。中断/超时能传播取消，不能回滚已发生的副作用，忽略 signal 的代码还可能继续；重试前检查实际结果。
 
 | 现象 | 首先检查 |
 | --- | --- |
-| ExerciseNotImplemented | 检查 L2～L5；L0/L1 已实现，完整聊天仍可选参考 Core |
+| ExerciseNotImplemented | 检查 L3～L5；L0/L1/L2 已实现，完整聊天仍可选参考 Core |
 | Kimi key / HTTP 401 | MOONSHOT_API_KEY/KIMI_API_KEY、区域平台、模型权限，不使用 OpenAI key 兜底 |
 | 更新 .env 后没生效 | shell 环境变量优先；确认运行目录或 --env-path 路径 |
 | 工具第二轮丢上下文 | reasoningContent 与 toolCalls 是否完整保存、持久化并转换回 wire 字段 |

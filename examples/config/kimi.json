@@ -8,6 +8,12 @@
   "turnTimeoutMs": 180000,
   "maxSteps": 8,
   "contextChars": 64000,
+  "compression": {
+    "enabled": true,
+    "threshold": 0.5,
+    "summaryChars": 6000,
+    "timeoutMs": 30000
+  },
   "autoReflect": false,
   "plugins": []
 }

@@ -16,3 +16,5 @@ export { loadAlgorithms, type Algorithms, type Mode } from './learning/index.js'
 export { loadSettings, initializeProfile, type Settings } from './config.js';
 export { ProfileLock } from './profile-lock.js';
 export { loadEnvironmentFile, type EnvironmentFileResult } from './environment.js';
+export { ContextCompressor, type CompressorOptions, type CompressionResult } from './core/compression/compressor.js';
+export { compressionSettings, DEFAULT_COMPRESSION, type CompressionSettings, type CompressionState } from './core/compression/settings.js';

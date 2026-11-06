@@ -14,7 +14,8 @@ export class ReferenceKimiProvider extends OpenAICompatibleProvider {
   protected override parseResponse(data: unknown): ModelResponse {
     const choice = isRecord(data) && Array.isArray(data.choices) ? data.choices[0] : undefined;
     if (!isRecord(choice) || !['stop', 'tool_calls'].includes(String(choice.finish_reason))) {
-      throw new ProviderError('Kimi did not return a completed text or tool response');
+      throw new ProviderError('Kimi did not return a completed text or tool response',
+        isRecord(choice) && choice.finish_reason === 'length' ? 'truncated' : 'invalid');
     }
     const result = super.parseResponse(data);
     if ((choice.finish_reason === 'tool_calls') !== Boolean(result.toolCalls?.length)) {

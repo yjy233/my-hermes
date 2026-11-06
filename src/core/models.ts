@@ -11,6 +11,8 @@ export interface Message {
   toolCallId?: string;
   /** 保留思考模型工具调用所需的协议元数据，不作为最终答复展示。 */
   reasoningContent?: string;
+  /** 仅由本地压缩器设置；不作为额外字段发送给模型。 */
+  contextSummary?: { body: string; hasUserTurn: boolean; originalContent?: string };
 }
 export interface ModelResponse { content: string; toolCalls?: ToolCall[]; reasoningContent?: string; }
 export interface ToolSchema {
@@ -116,3 +118,6 @@ export function fromWireMessage(value: unknown): Message {
 }
 
 export function messageSize(message: Message): number { return JSON.stringify(toWireMessage(message)).length; }
+export function requestSize(messages: Message[], tools: ToolSchema[]): number {
+  return messages.reduce((total, message) => total + messageSize(message), 0) + JSON.stringify(tools).length;
+}

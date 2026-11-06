@@ -1,7 +1,10 @@
 import { abortable, KeyedMutex, withTimeout } from './async.js';
 import { buildRegistry } from './builtin-tools.js';
 import { ContextBudgetExceeded } from './errors.js';
-import { messageSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from './models.js';
+import { requestSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from './models.js';
+import { ContextCompressor } from './compression/compressor.js';
+import { CompressingProvider } from './compression/provider.js';
+import { compressionSettings, type CompressionSettings } from './compression/settings.js';
 import { loadAlgorithms, type Algorithms, type Mode } from '../learning/index.js';
 import type { LongTermMemory, SessionStore } from '../memory/index.js';
 import type { SkillCatalog } from '../skills/catalog.js';
@@ -12,6 +15,7 @@ export interface AgentOptions {
   provider: Provider; store: SessionStore; memory: LongTermMemory; skills: SkillCatalog;
   mode?: Mode; maxSteps?: number; contextChars?: number; turnTimeoutMs?: number;
   plugins?: string[]; evolution?: EvolutionManager; autoReflect?: boolean; emit?: Emit;
+  compression?: Partial<CompressionSettings>; summaryProvider?: Provider;
 }
 
 export class Agent {
@@ -20,11 +24,13 @@ export class Agent {
   private readonly maxSteps: number;
   private readonly contextChars: number;
   private readonly turnTimeoutMs: number;
+  private readonly compression: CompressionSettings;
   constructor(private readonly options: AgentOptions) {
     this.algorithms = loadAlgorithms(options.mode ?? 'reference');
     this.maxSteps = options.maxSteps ?? 8;
     this.contextChars = options.contextChars ?? 24_000;
     this.turnTimeoutMs = options.turnTimeoutMs ?? 120_000;
+    this.compression = compressionSettings(options.compression);
     if (!Number.isSafeInteger(this.maxSteps) || this.maxSteps < 1 ||
         !Number.isSafeInteger(this.contextChars) || this.contextChars < 1000 ||
         !Number.isFinite(this.turnTimeoutMs) || this.turnTimeoutMs <= 0 || this.turnTimeoutMs > 2_147_483_647) {
@@ -50,9 +56,10 @@ export class Agent {
       store.setSystemPrompt(session.id, prompt);
     }
     const user: Message = { role: 'user', content: text };
-    const context = this.algorithms.compactHistory([
-      { role: 'system', content: prompt }, ...store.loadMessages(session.id), user,
-    ], this.contextChars);
+    const history = this.compression.enabled ? store.loadContextMessages(session.id) : store.loadMessages(session.id);
+    const fullContext: Message[] = [{ role: 'system', content: prompt }, ...history, user];
+    // 语义压缩需要异步模型调用，放在 Provider 边界；关闭时使用 L2 的确定性整轮裁剪。
+    const context = this.compression.enabled ? fullContext : this.algorithms.compactHistory(fullContext, this.contextChars);
     const registry = buildRegistry(memory, store, skills, scope, this.algorithms);
     const plugins = new PluginManager(registry);
     await abortable(plugins.load(this.options.plugins ?? []), signal);
@@ -65,11 +72,25 @@ export class Agent {
       }
     };
     emit('turn.start', {});
-    const delta = await abortable(this.algorithms.runLoop(new BudgetProvider(this.options.provider, this.contextChars),
-      registry, context, this.maxSteps, emit, signal), signal);
-    signal.throwIfAborted();
-    validateTurn(delta);
-    store.appendMessages(session.id, [user, ...delta]);
+    const previousState = store.loadCompressionState(session.id);
+    const compressor = new ContextCompressor({ provider: this.options.provider, summaryProvider: this.options.summaryProvider,
+      maxChars: this.contextChars, settings: this.compression, state: previousState, memory: prompt, emit });
+    const provider = new CompressingProvider(new BudgetProvider(this.options.provider, this.contextChars), compressor, this.contextChars);
+    let delta: Message[];
+    try {
+      delta = await abortable(this.algorithms.runLoop(provider, registry, context, this.maxSteps, emit, signal), signal);
+      signal.throwIfAborted();
+      validateTurn(delta);
+      const completed = provider.hasRequests ? provider.completedContext(delta.at(-1)!) : [...context, ...delta];
+      store.appendMessages(session.id, [user, ...delta], this.compression.enabled ? {
+        messages: completed.slice(1), state: compressor.snapshot(),
+      } : undefined);
+    } catch (error) {
+      if (!signal.aborted && JSON.stringify(previousState) !== JSON.stringify(compressor.snapshot())) {
+        store.saveCompressionState(session.id, compressor.snapshot());
+      }
+      throw error;
+    }
     emit('turn.persisted', { newMessages: delta.length + 1 });
     if (this.options.autoReflect && this.options.evolution) {
       try {
@@ -86,7 +107,7 @@ export class BudgetProvider implements Provider {
   constructor(private readonly delegate: Provider, private readonly maxChars: number) {}
   async complete(messages: Message[], tools: ToolSchema[], signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (messages.reduce((size, message) => size + messageSize(message), 0) + JSON.stringify(tools).length > this.maxChars) {
+    if (requestSize(messages, tools) > this.maxChars) {
       throw new ContextBudgetExceeded('Messages and tool schemas exceed the per-request context budget');
     }
     const response = await abortable(this.delegate.complete(messages, tools, signal), signal);

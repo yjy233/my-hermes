@@ -28,6 +28,13 @@ for (const stage of [2, 3, 5]) test(`stage ${stage} learner TODO is a named fail
   assert.ok(result.cases.every(item => item.name));
 });
 
+test('learner memory stage passes every L2 contract; only L3 remains an exercise', async () => {
+  const result = await checkStage(2, 'learner');
+  const compression = result.cases.filter(item => item.name.startsWith('L2/'));
+  assert.equal(compression.length, 4);
+  assert.ok(compression.every(item => item.status === 'passed'), JSON.stringify(compression));
+});
+
 test('completed learner loop passes all nine Core contracts independently of the remaining exercises', async () => {
   const result = await checkStage(1, 'learner');
   assert.equal(result.status, 'passed', JSON.stringify(result.cases));

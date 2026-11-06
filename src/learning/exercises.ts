@@ -1,7 +1,7 @@
-/** L1 已实现并附中文说明；L2～L5 继续保留为练习，外围系统可切换到 reference 模式运行。 */
+/** L1/L2 已实现；异步语义压缩位于 core/compression，L3～L5 保留为练习。 */
 import { abortable } from '../core/async.js';
-import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
-import { validateModelResponse, type Emit, type Message, type Provider } from '../core/models.js';
+import { ContextBudgetExceeded, ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
+import { messageSize, validateModelResponse, type Emit, type Message, type Provider } from '../core/models.js';
 import type { ToolRegistry } from '../core/tools.js';
 import type { MemoryHit } from '../memory/store.js';
 
@@ -123,10 +123,26 @@ export async function runLoop(
   // 防御性兜底：只允许通过“最终答复”正常返回，绝不把最后一条工具结果冒充答案。
   throw new StepLimitExceeded(`No final answer after ${maxSteps} model steps`);
 }
-export function compactHistory(_messages: Message[], _maxChars: number): Message[] {
-  // L2：保留 system 与最近的完整轮次，不拆散工具调用和结果；用 core/models 的 messageSize 计算预算。
-  throw new ExerciseNotImplemented('L2: implement learning/exercises.ts compactHistory');
-}
+export function compactHistory(messages: Message[], maxChars: number): Message[] {
+  // 关闭语义压缩时使用的纯函数。裁剪完整 user 轮次，不接触数据库，也不调用参考实现。
+  if (!Number.isSafeInteger(maxChars) || maxChars <= 0) throw new Error('maxChars must be positive');
+  if (messages[0]?.role !== 'system') throw new Error('Context must begin with a system message');
+  const system = messages[0];
+  if (messages.length > 1 && messages[1].role !== 'user') throw new Error('Expected user message after system');
+  const starts = messages.flatMap((row, index) => row.role === 'user' ? [index] : []);
+  let used = messageSize(system), keepFrom = messages.length;
+  if (used > maxChars) throw new ContextBudgetExceeded('System prompt exceeds context budget');
+  for (let turn = starts.length - 1; turn >= 0; turn--) {
+    const start = starts[turn];
+    const size = messages.slice(start, keepFrom).reduce((sum, row) => sum + messageSize(row), 0);
+    if (used + size > maxChars) {
+      if (keepFrom === messages.length) throw new ContextBudgetExceeded('System prompt and newest turn exceed budget');
+      break;
+    }
+    used += size; keepFrom = start;
+  }
+  return [system, ...messages.slice(keepFrom)];
+    }
 export function selectMemories(_query: string, _hits: MemoryHit[], _limit: number): MemoryHit[] {
   // L3：对已按用户隔离的候选记录排序，不修改原始数据，并限制返回条数。
   throw new ExerciseNotImplemented('L3: implement learning/exercises.ts selectMemories');

@@ -3,15 +3,18 @@ import { isAbsolute, resolve } from 'node:path';
 import { isRecord } from './core/models.js';
 import type { Mode } from './learning/types.js';
 import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL } from './core/providers/kimi-shared.js';
+import { compressionSettings, DEFAULT_COMPRESSION, type CompressionSettings } from './core/compression/settings.js';
 
 export interface Settings {
   home: string; mode: Mode; providerMode: Mode; provider: 'demo' | 'compatible' | 'kimi'; model: string; baseUrl: string;
   maxSteps: number; contextChars: number; turnTimeoutMs: number; providerTimeoutMs: number; autoReflect: boolean; plugins: string[];
+  compression: CompressionSettings;
 }
-export type SettingsOverrides = Partial<Omit<Settings, 'home'>>;
+export type SettingsOverrides = Partial<Omit<Settings, 'home' | 'compression'>> & { compression?: Partial<CompressionSettings> };
 const DEFAULTS: Omit<Settings, 'home'> = {
   mode: 'reference', providerMode: 'learner', provider: 'demo', model: 'local-model', baseUrl: 'http://127.0.0.1:11434/v1',
   maxSteps: 8, contextChars: 24_000, turnTimeoutMs: 120_000, providerTimeoutMs: 30_000, autoReflect: false, plugins: [],
+  compression: DEFAULT_COMPRESSION,
 };
 export function loadSettings(home?: string, overrides: SettingsOverrides = {}): Settings {
   const root = resolve(home ?? process.env.MY_HERMES_HOME ?? '.hermes-lab');
@@ -28,6 +31,7 @@ export function loadSettings(home?: string, overrides: SettingsOverrides = {}): 
   const selected = explicit.provider ?? source.provider ?? DEFAULTS.provider;
   const preset = selected === 'kimi' ? { model: KIMI_DEFAULT_MODEL, baseUrl: KIMI_DEFAULT_BASE_URL } : {};
   const data: Record<string, unknown> = { ...DEFAULTS, ...preset, ...source, ...explicit };
+  data.compression = compressionSettings(data.compression);
   for (const name of ['mode', 'providerMode', 'provider', 'model', 'baseUrl']) {
     if (typeof data[name] !== 'string' || !(data[name] as string).trim()) throw new Error(`${name} must be nonempty text`);
   }
