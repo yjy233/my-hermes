@@ -1,6 +1,6 @@
 # 分阶段学习与实现
 
-读完 [架构](01-architecture.md)，先阅读已完成的 Kimi 连接 L0 和 `src/learning/exercises.ts` 中带中文注释的 L1 runLoop 和 L2 compactHistory，再实现 L3～L5。已完成的主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
+读完 [架构](01-architecture.md)，先阅读已完成的 Kimi 连接 L0 和 `src/learning/exercises.ts` 中带中文注释的 L1 runLoop、L2 compactHistory、L3 selectMemories，再实现 L4/L5。已完成的主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
 
 ```sh
 npm install
@@ -9,7 +9,7 @@ npm run check -- --all --mode reference
 npm run dev -- check --stage 0 --mode learner
 ```
 
-以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`；阶段 1 的 learner 也应通过。L3～L5 未实现时明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
+以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`；阶段 1/2 的 learner 也应通过。L4/L5 未实现时明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
 
 `check/demo` 的 mode 优先级为命令行 `--mode` → 所选 profile 的 `config.json` → 默认 `reference`。profile 由 `--home` 或 `MY_HERMES_HOME` 选择。检查只读取配置，运行数据放临时目录，不初始化日常 profile，不调用其真实模型，也不加载其插件。
 
@@ -52,15 +52,15 @@ npm 默认还会显示脚本启动信息；需要机器逐行解析 JSON 时，�
 npm run dev -- check --all --mode learner
 ```
 
-即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L3～L5 未完成时状态为 `[passed, passed, failed, failed, passed, failed]`：阶段 0/1 是已完成主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
+即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`：阶段 0/1/2 是已完成主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
 
-L1/L2 已完成，但完整 `chat --mode learner` 仍需补齐 L4；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；未完成的召回算法会形成工具错误。可用 `--mode reference` 运行完整系统，下一步独立实现阶段 2 的 L3。
+L1～L3 已完成，但完整 `chat --mode learner` 仍需补齐 L4；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；召回失败会形成工具错误供模型处理。可用 `--mode reference` 运行完整系统，下一步独立实现阶段 3 的 L4。
 
 ## 阶段 0：Kimi 模型连接（L0）
 
 `src/core/providers/kimi.ts` 的 `KimiProvider.complete(messages, tools, signal?)` 已实现，返回 `Promise<ModelResponse>`，不依赖对照版兜底。通过 [Kimi 专题](07-kimi-provider.md) 阅读请求、响应、工具、推理字段与取消；本机 mock 回归不需要真实 key，也不调用在线服务。
 
-`check --stage 0 --mode learner/reference` 分别检查已完成主实现或对照版，与运行时 --provider-mode 分开。根目录 `.env` 填入密钥后，可用 `npm run kimi:doctor` 检查配置，再由你执行 `npm run kimi:test` 或 `npm run kimi:chat`；这些真实调用使用参考 Core，L3～L5 未完成也可运行。阶段回归本身始终离线。
+`check --stage 0 --mode learner/reference` 分别检查已完成主实现或对照版，与运行时 --provider-mode 分开。根目录 `.env` 填入密钥后，可用 `npm run kimi:doctor` 检查配置，再由你执行 `npm run kimi:test` 或 `npm run kimi:chat`；这些真实调用使用参考 Core，L4/L5 未完成也可运行。阶段回归本身始终离线。
 
 K3.1 Pro 的 `reasoning_content` 必须映射成内部 reasoningContent 并随完整 assistant 历史往返；最终 CLI 只显示 content，不能把推理内容拼到用户答复或 trace。检查预算、错误脱敏与工具 ID 配对，完整契约见专题。
 
@@ -89,7 +89,7 @@ runLoop(provider, registry, messages, maxSteps, emit, signal?): Promise<Message[
 npm run dev -- check --stage 1 --mode learner --trace
 ```
 
-当前阶段 1 的 9 个具名回归均应通过；可以在 text/tool 共存、context/delta 更新、结果 ID 配对和取消检查处设置断点。L1 通过后阅读 L2 并实现 L3，不代表完整 learner 聊天已经可用。
+当前阶段 1 的 9 个具名回归均应通过；可以在 text/tool 共存、context/delta 更新、结果 ID 配对和取消检查处设置断点。L1 通过后阅读 L2/L3，再实现 L4；阶段 1/2 通过不代表完整 learner 聊天已经可用。
 
 离线验收 `/calc (2+3)*4` 应产生 calculator 调用、`{"ok":true,"result":20}` 的工具返回，再得到最终文本。主动测试未知工具、非法表达式、超时、重复 ID、模型持续请求工具等情况。Registry 会把普通工具失败包装为 `ok: false`，让模型观察错误后继续决策；取消应保留取消语义。
 
@@ -97,7 +97,7 @@ npm run dev -- check --stage 1 --mode learner --trace
 
 ## 阶段 2：短期上下文与长期记忆（L2/L3）
 
-L2 `compactHistory` 已完成，十个 L2 阶段 case 应通过；下一步练习是 L3 `selectMemories`。L2 的 learner 与 reference 都直接实现异步压缩主流程，运行时不会绕过所选版本。先在 `exercises.ts` 的 L2 设置断点，再进入 `core/compression` 的辅助方法。
+L2 `compactHistory` 和 L3 `selectMemories` 已完成，阶段 2 应全部通过。L2 的 learner 与 reference 都直接实现异步压缩主流程，运行时不会绕过所选版本。先在 `exercises.ts` 的 L2 设置断点，再进入 `core/compression` 的辅助方法。
 
 L2 `compactHistory(messages, tools, runtime, signal?, force?)` 返回 `Promise<CompressionResult>`：
 
@@ -115,7 +115,9 @@ L3 `selectMemories(query, hits, limit)`：
 
 - hits 已由存储层按 scope 隔离，本函数只排序，不重新越权查询。
 - 返回最多 limit 条，不修改输入；等分保持原始顺序，非正 limit 返回空数组。
-- 查询 `TypeScript` 时，`TypeScript tooling` 应排在无关内容前。先让排序可解释，再扩展中文切词、时间衰减或去重。
+- 大小写不敏感，按不同查询词项的命中数排序；重复查询词或正文重复词不额外加分。中文连续文字按子串匹配，不做自动分词。
+- 空查询返回空数组，limit 必须是安全整数。无相关性差异时保留候选顺序，不修改存储层 score。
+- `history_search` 从同 scope 的所有 session 查询原始 SQLite 消息，再执行 L3；压缩不删除原文。具体存储格式、检索范围和字面查询限制见 [记忆文档](04-memory-and-extensions.md#磁盘存储与历史召回)。
 
 阶段检查覆盖上下文分组、排序与记忆隔离。在 `SessionStore.appendMessages` 和 `Agent` 请求模型处设置断点，确认 SQLite 仍保存完整历史。修改长期记忆后，用新会话检查提示快照，详见 [记忆与扩展](04-memory-and-extensions.md)。
 

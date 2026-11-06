@@ -66,7 +66,7 @@ export function buildRegistry(memory: LongTermMemory, store: SessionStore, skill
       memory.write(scope, args.target as string, args.content as string);
       return `Updated ${args.target}; a new session receives the updated prompt snapshot.`;
     } });
-  registry.register({ name: 'history_search', description: 'Search previous sessions for the same user only.',
+  registry.register({ name: 'history_search', description: 'Search saved original messages, including history removed from the active context by compression. Covers this session and other sessions for the same user and channel in this profile. Use a short literal phrase; returns up to 5 matches with sessionId. An empty result means no matching saved messages.',
     parameters: objectSchema({ query: { type: 'string', maxLength: 300 } }),
     handler: args => algorithms.selectMemories(args.query as string, store.search(args.query as string, scope, 20), 5) });
   registry.register({ name: 'skill_read', description: 'Read the full body of a named skill in the skill index.',

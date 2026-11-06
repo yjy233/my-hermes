@@ -10,6 +10,28 @@ scope 由入口生成，模型不能替换。Gateway 使用 `[channel,userId]` �
 
 `SessionStore` 提供 `getOrCreate`、`setSystemPrompt`、`loadMessages`、`appendMessages`、`search`、`listSessions`、`close`。系统提示在新会话第一次运行时固定；记忆写入后，工具读取可见实时值，新会话才读取新快照。Node 24 的 `node:sqlite` 可能发出实验性 API 警告。
 
+## 磁盘存储与历史召回
+
+默认 profile 为项目目录下的 `.hermes-lab/`；`--home` 或 `MY_HERMES_HOME` 可指定其他位置。记忆不统一存成 JSONL：
+
+| 文件 | 内容 |
+| --- | --- |
+| `sessions.db` | SQLite：`sessions` 保存会话与固定系统提示；`messages` 保存成功轮次的原始消息；`context_checkpoints` 保存压缩后的工作上下文与冷却状态 |
+| `memory/<sha256(scope)>/MEMORY.md`、`USER.md` | 精选事实、偏好及用户资料，独立于对话摘要 |
+| `skills/<name>/SKILL.md` | 经审核的可复用流程；待审候选另存于 `proposals/*.json` |
+| `traces.jsonl` | 启用 chat/gateway 的 `--trace` 后追加的诊断事件，不是完整会话或记忆数据库 |
+
+JSONL 连接器则是按行传递输入事件和输出回复的协议，不承担记忆持久化。
+
+L3 `selectMemories` 已在 learner 实现，运行链路是 `history_search → SessionStore.search → 所选模式的 selectMemories → 工具结果 → 下一次模型请求`：
+
+1. 入口绑定 scope，工具只接受 query，不能指定另一个用户或渠道。查询覆盖该 profile 中同 scope 的所有 session，包含当前会话。
+2. SQLite 从完整 `messages` 表按字面子串取最近最多 20 条候选，不查询压缩摘要；所以被摘要省略的细节、重启前的记录仍可召回。查询宜用短关键词或原文短语，不支持把整句自然语言问题自动改写成语义搜索。
+3. L3 忽略大小写，对去重后的查询词项计分，稳定排序后最多返回 5 条；同分保持数据库提供的较新优先顺序。中文连续文字按子串匹配，不做自动分词。字面匹配候选通常同分；L3 仍可独立处理其他来源提供的候选列表。
+4. 空查询或无匹配返回空数组，数据库错误交给工具框架包装成 `ok: false`，不会假装没有记录。总工具输出有字符预算，过长会标记 `truncated`；原始数据库记录不受影响。
+
+每条结果带 `sessionId` 和原文；这不是自动加载所有其他会话。模型需要调用工具，离线 demo 可用 `/recall 关键词`。`npm run dev -- check --stage 2 --mode learner` 验收 L2/L3；完整 learner CLI 聊天仍需实现 L4 路由。`tests/recall.test.ts` 直接传入会话键，验证 learner 的压缩、重启、同/跨会话召回、用户/渠道/profile 隔离及工具失败处理。
+
 ## Skill 渐进加载
 
 `SkillCatalog(roots)` 扫描下一层 `*/SKILL.md`，支持单行 frontmatter；`discover()` 刷新、`index()` 返回名称/描述、`read(name)` 按需读正文。单文件上限 32000 字节，重复名称、软链目录和越界路径会被拒绝。

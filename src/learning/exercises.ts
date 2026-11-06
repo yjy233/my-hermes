@@ -1,4 +1,4 @@
-/** L1/L2 是运行时实际调用的学习实现；L3～L5 保留为练习。 */
+/** L1～L3 是运行时实际调用的学习实现；L4/L5 保留为练习。 */
 import { abortable } from '../core/async.js';
 import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
 import { requestSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from '../core/models.js';
@@ -202,9 +202,28 @@ export async function compactHistory(
   return runtime.commit(messages, nextContext, tools, generated ? 'summary' : 'fallback');
 }
 
-export function selectMemories(_query: string, _hits: MemoryHit[], _limit: number): MemoryHit[] {
-  // L3：对已按用户隔离的候选记录排序，不修改原始数据，并限制返回条数。
-  throw new ExerciseNotImplemented('L3: implement learning/exercises.ts selectMemories');
+// 历史召回，让 Agent 能找到被压缩出上下文的原始对话。
+export function selectMemories(query: string, hits: MemoryHit[], limit: number): MemoryHit[] {
+  // 1. history_search 先用 SessionStore.search 按 scope 查完整 messages 表。
+  // 候选可以来自当前或其他 session；这里不接收 scope，也不自行读取别人的记录。
+  if (!Number.isSafeInteger(limit)) throw new RangeError('Memory limit must be a safe integer');
+  if (limit <= 0 || !query.trim() || !hits.length) return [];
+
+  // 2. 提取查询里的字母、数字、下划线词项，大小写不敏感，重复词只计一次。
+  // 中文连续文字作为一个子串；这不是分词模型或向量语义检索。
+  const normalized = query.trim().toLowerCase();
+  const terms = new Set(normalized.match(/[\p{L}\p{N}_]+/gu) ?? [normalized]);
+  const ranked = hits.map((hit, index) => {
+    const content = hit.content.toLowerCase();
+    let relevance = 0;
+    for (const term of terms) if (content.includes(term)) relevance++;
+    return { hit, index, relevance };
+  });
+
+  // 3. 命中更多不同词项的记录优先；同分沿用候选顺序（数据库默认较新优先）。
+  // 排序装饰后的新数组，不改原 hits、正文或存储层 score，最后应用数量上限。
+  ranked.sort((left, right) => right.relevance - left.relevance || left.index - right.index);
+  return ranked.slice(0, limit).map(item => item.hit);
 }
 export function sessionKey(_channel: string, _conversationId: string, _userId: string): string {
   // L4：将渠道、会话、用户三个维度编码成稳定且不易碰撞的会话键。

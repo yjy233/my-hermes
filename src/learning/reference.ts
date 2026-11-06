@@ -80,8 +80,11 @@ export async function compactHistory(messages: Message[], tools: ToolSchema[], r
 }
 
 export function selectMemories(query: string, hits: MemoryHit[], limit: number): MemoryHit[] {
-  const terms = [...new Set(query.toLocaleLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [])];
-  const score = (hit: MemoryHit) => terms.filter(term => hit.content.toLocaleLowerCase().includes(term)).length;
+  if (!Number.isSafeInteger(limit)) throw new RangeError('Memory limit must be a safe integer');
+  if (limit <= 0 || !query.trim()) return [];
+  const normalized = query.trim().toLowerCase();
+  const terms = [...new Set(normalized.match(/[\p{L}\p{N}_]+/gu) ?? [normalized])];
+  const score = (hit: MemoryHit) => terms.filter(term => hit.content.toLowerCase().includes(term)).length;
   return [...hits].sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, limit));
 }
 export function sessionKey(channel: string, conversationId: string, userId: string): string {

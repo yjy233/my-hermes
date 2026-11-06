@@ -21,15 +21,16 @@ for (const stage of [0, 1, 2, 3, 4, 5]) test(`stage ${stage} reference has named
   assert.equal(events.filter(event => event === 'case.passed').length, result.total);
 });
 
-for (const stage of [2, 3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
+for (const stage of [3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
   const result = await checkStage(stage, 'learner');
   assert.equal(result.status, 'failed');
   assert.ok(result.cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
   assert.ok(result.cases.every(item => item.name));
 });
 
-test('learner memory stage passes every L2 contract; only L3 remains an exercise', async () => {
+test('learner memory stage passes both compression and recall contracts', async () => {
   const result = await checkStage(2, 'learner');
+  assert.equal(result.status, 'passed', JSON.stringify(result.cases));
   const compression = result.cases.filter(item => item.name.startsWith('L2/'));
   assert.equal(compression.length, 10);
   assert.ok(compression.every(item => item.status === 'passed'), JSON.stringify(compression));
@@ -52,6 +53,16 @@ test('stage 2 rejects a no-op L2 that silently skips summarization', async () =>
   });
   assert.equal(result.cases.find(item => item.name === 'L2/structured-summary-prompt-and-immutability')?.status, 'failed');
   assert.equal(result.cases.find(item => item.name === 'L2/auxiliary-fallback-once')?.status, 'failed');
+});
+
+test('stage 2 reports an unfinished L3 without silently selecting reference memories', async () => {
+  const result = await checkStage(2, 'learner', {}, {
+    ...loadAlgorithms('learner'),
+    selectMemories() { throw new ExerciseNotImplemented('L3 injected unfinished algorithm'); },
+  });
+  const cases = result.cases.filter(item => item.name.startsWith('L3/'));
+  assert.ok(cases.length > 0);
+  assert.ok(cases.every(item => item.status === 'failed' && item.error?.name === 'ExerciseNotImplemented'));
 });
 
 test('completed learner loop passes all nine Core contracts independently of the remaining exercises', async () => {
@@ -129,7 +140,7 @@ test('CLI --all reports all learner stages, emits trace on stderr and leaves the
     assert.equal(child.status, 1, child.stderr);
     const reports = child.stdout.trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(reports.map(item => item.stage), [0, 1, 2, 3, 4, 5]);
-    assert.deepEqual(reports.map(item => item.status), ['passed', 'passed', 'failed', 'failed', 'passed', 'failed']);
+    assert.deepEqual(reports.map(item => item.status), ['passed', 'passed', 'passed', 'failed', 'passed', 'failed']);
     assert.match(child.stderr, /case\.start/); assert.match(child.stderr, /case\.failed/);
     assert.match(child.stderr, /L0/); assert.match(child.stderr, /L1/); assert.match(child.stderr, /L2/);
     assert.match(child.stderr, /L3/); assert.match(child.stderr, /L4/); assert.match(child.stderr, /L5/);

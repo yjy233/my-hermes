@@ -5,7 +5,7 @@ import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
 import { type Emit, type Message, type ModelResponse, type Provider } from '../core/models.js';
 import { ToolRegistry } from '../core/tools.js';
 import type { Algorithms } from '../learning/types.js';
-import type { MemoryHit } from '../memory/store.js';
+import { SessionStore, type MemoryHit } from '../memory/store.js';
 import { compressionCases } from './compression.js';
 
 export interface StageCase {
@@ -177,6 +177,45 @@ function memoryCases(algorithms: Algorithms, emit: Emit): StageCase[] {
       assert.deepEqual(algorithms.selectMemories('TypeScript', hits, 0), []);
       assert.deepEqual(algorithms.selectMemories('TypeScript', hits, -1), []);
       assert.deepEqual(algorithms.selectMemories('TypeScript', [], 5), []);
+    } },
+    { name: 'L3/distinct-mixed-language-terms', run() {
+      const hits: MemoryHit[] = [
+        { sessionId: 'chinese', content: '记忆保存在本地', score: 1 },
+        { sessionId: 'english', content: 'TypeScript TYPESCRIPT TypeScript', score: 99 },
+        { sessionId: 'both', content: '用 typescript 实现记忆', score: 0 },
+      ];
+      const original = structuredClone(hits);
+      assert.deepEqual(algorithms.selectMemories('TypeScript typescript 记忆', hits, 10)
+        .map(hit => hit.sessionId), ['both', 'chinese', 'english']);
+      assert.deepEqual(hits, original);
+      assert.deepEqual(algorithms.selectMemories('不存在的词', hits, 2), hits.slice(0, 2), 'No relevance ties keep candidate order');
+    } },
+    { name: 'L3/empty-query-literal-symbols-and-invalid-limit', run() {
+      const hits: MemoryHit[] = [
+        { sessionId: 'plain', content: 'plain text', score: 1 },
+        { sessionId: 'symbol', content: '100%', score: 1 },
+      ];
+      assert.deepEqual(algorithms.selectMemories(' \n\t ', hits, 3), []);
+      assert.equal(algorithms.selectMemories('%', hits, 1)[0]?.sessionId, 'symbol');
+      for (const limit of [NaN, Infinity, -Infinity, 1.5]) {
+        assert.throws(() => algorithms.selectMemories('plain', hits, limit), RangeError);
+      }
+    } },
+    { name: 'L3/scoped-cross-session-originals', run() {
+      const store = new SessionStore(':memory:');
+      try {
+        const scope = JSON.stringify(['lab', 'alice']);
+        const first = store.getOrCreate('first-room', scope);
+        const second = store.getOrCreate('second-room', scope);
+        const otherUser = store.getOrCreate('bob-room', JSON.stringify(['lab', 'bob']));
+        const otherChannel = store.getOrCreate('other-channel', JSON.stringify(['other', 'alice']));
+        for (const session of [first, second, otherUser, otherChannel]) {
+          store.appendMessages(session.id, [{ role: 'user', content: `归档编号：${session.key}` }]);
+        }
+        const hits = algorithms.selectMemories('归档编号', store.search('归档编号', scope, 20), 5);
+        assert.deepEqual(hits.map(hit => hit.sessionId), [second.id, first.id]);
+        assert.deepEqual(algorithms.selectMemories('missing', store.search('missing', scope), 5), []);
+      } finally { store.close(); }
     } },
   ];
 }
