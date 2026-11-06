@@ -1,9 +1,12 @@
-/** L1/L2 已实现；异步语义压缩位于 core/compression，L3～L5 保留为练习。 */
+/** L1/L2 是运行时实际调用的学习实现；L3～L5 保留为练习。 */
 import { abortable } from '../core/async.js';
-import { ContextBudgetExceeded, ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
-import { messageSize, validateModelResponse, type Emit, type Message, type Provider } from '../core/models.js';
+import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
+import { requestSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from '../core/models.js';
 import type { ToolRegistry } from '../core/tools.js';
 import type { MemoryHit } from '../memory/store.js';
+import type { CompressionResult, CompressionRuntime } from '../core/compression/types.js';
+import { assembleSummary, buildSummaryPrompt, deterministicSummary, elide, redact, summaryMessage, withoutSummaries } from '../core/compression/text.js';
+import { messagesSize, planWindow, pruneHistory } from '../core/compression/window.js';
 
 /**
  * L1：执行一次用户任务中的“模型决策 → 工具执行 → 再次决策”循环。
@@ -123,26 +126,82 @@ export async function runLoop(
   // 防御性兜底：只允许通过“最终答复”正常返回，绝不把最后一条工具结果冒充答案。
   throw new StepLimitExceeded(`No final answer after ${maxSteps} model steps`);
 }
-export function compactHistory(messages: Message[], maxChars: number): Message[] {
-  // 关闭语义压缩时使用的纯函数。裁剪完整 user 轮次，不接触数据库，也不调用参考实现。
-  if (!Number.isSafeInteger(maxChars) || maxChars <= 0) throw new Error('maxChars must be positive');
-  if (messages[0]?.role !== 'system') throw new Error('Context must begin with a system message');
-  const system = messages[0];
-  if (messages.length > 1 && messages[1].role !== 'user') throw new Error('Expected user message after system');
-  const starts = messages.flatMap((row, index) => row.role === 'user' ? [index] : []);
-  let used = messageSize(system), keepFrom = messages.length;
-  if (used > maxChars) throw new ContextBudgetExceeded('System prompt exceeds context budget');
-  for (let turn = starts.length - 1; turn >= 0; turn--) {
-    const start = starts[turn];
-    const size = messages.slice(start, keepFrom).reduce((sum, row) => sum + messageSize(row), 0);
-    if (used + size > maxChars) {
-      if (keepFrom === messages.length) throw new ContextBudgetExceeded('System prompt and newest turn exceed budget');
-      break;
-    }
-    used += size; keepFrom = start;
+/**
+ * L2：每次模型请求前执行的异步上下文压缩，包含触发、清理、摘要和失败后的选择。
+ * 对应 Hermes ContextCompressor.compress 的职责；不调用 reference 答案。
+ *
+ * runtime 提供模型请求、超时、辅助模型回退、冷却状态与提交校验；
+ * window.ts 管理工具配对/头尾边界，text.ts 负责 prompt 与上下文重组。
+ * 这里只返回模型要看的工作上下文，SQLite 中的完整原始消息由 Agent 单独保存。
+ */
+export async function compactHistory(
+  messages: Message[], tools: ToolSchema[], runtime: CompressionRuntime,
+  signal?: AbortSignal, force = false,
+): Promise<CompressionResult> {
+  signal?.throwIfAborted();
+  const { settings, maxChars } = runtime;
+  const originalSize = requestSize(messages, tools);
+  const state = runtime.snapshot();
+
+  // 1. 正常请求看软阈值、失败冷却和增长量。远端确认溢出时 force 可绕过这些门槛。
+  if (!settings.enabled || (!force && originalSize < maxChars * settings.threshold)) {
+    return { messages, changed: false };
   }
-  return [system, ...messages.slice(keepFrom)];
-    }
+  if (!force && state.cooldownUntil > Date.now()) return runtime.skipped(messages, 'cooldown', originalSize);
+  if (!force && originalSize <= maxChars && originalSize < state.nextAttemptChars) {
+    return runtime.skipped(messages, 'no-progress-backoff', originalSize);
+  }
+  runtime.emit('compression.start', { beforeChars: originalSize, forced: force });
+  const messageBudget = maxChars - JSON.stringify(tools).length;
+  if (messageBudget < 512) return runtime.skipped(messages, 'tool-schemas-exhaust-budget', originalSize, true);
+
+  // 2. 先做无模型成本的清理。只改副本，最新工具组保留完整；足够小就直接采用。
+  const cleaned = pruneHistory(messages, messageBudget, settings);
+  const cleanedSize = requestSize(cleaned, tools);
+  if (!force && cleanedSize < maxChars * settings.threshold && originalSize - cleanedSize >= 256) {
+    return runtime.commit(messages, cleaned, tools, 'prune');
+  }
+
+  // 3. 对齐工具调用组，划分受保护的头尾与待总结的中段，并为摘要留出实际空间。
+  const window = planWindow(cleaned, messageBudget, settings);
+  if (!window) return runtime.skipped(messages, 'no-middle-window', originalSize, true);
+  const reloadNotes = window.skills.length === 0 ? '' : '\n\n## Skills to reload\n' + window.skills
+    .map(name => `[Reload skill: ${name}] Call skill_read before using its procedure.`).join('\n');
+  const protectedSize = messagesSize(assembleSummary(window.head, summaryMessage(reloadNotes), window.tail));
+  const summaryBudget = Math.floor(Math.min(settings.summaryChars, messageBudget * 0.2, messageBudget - protectedSize));
+  if (summaryBudget < 256) return runtime.skipped(messages, 'protected-context-exhausts-budget', originalSize, true);
+  if (messagesSize(window.middle) + window.previous.length < summaryBudget + 256) {
+    return runtime.skipped(messages, 'middle-too-small', originalSize, true);
+  }
+
+  // 4. 摘要 prompt = 固定结构要求 + 旧摘要 + 冻结记忆 + 中段轨迹 + 最新请求重点。
+  // buildSummaryPrompt 会按序列化大小限长、脱敏，并区分真实用户输入和合成摘要。
+  const currentRequest = withoutSummaries(messages).findLast(message => message.role === 'user');
+  const prompt = buildSummaryPrompt({
+    middle: window.middle, previous: window.previous, memory: runtime.memory,
+    focus: runtime.focus ?? currentRequest?.content ?? '', summaryChars: summaryBudget,
+    inputChars: maxChars, date: new Date().toISOString().slice(0, 10), hasUserTurn: window.hasUserTurn,
+  });
+  const generated = prompt ? await runtime.generate(prompt, signal) : null;
+  // 取消不能转成本地兜底，也不能让迟到响应产生新的上下文。
+  signal?.throwIfAborted();
+
+  // 5. generate 负责有界模型回退和错误分类；L2 决定保留历史还是允许降级。
+  // 空摘要、截断、鉴权、网络等失败保留原始输入，连上面的工具清理也不提交。
+  if (!generated && prompt && runtime.mustPreserveHistory()) {
+    return runtime.skipped(messages, 'summary-failed-preserve-history', originalSize);
+  }
+  if (!generated && settings.abortOnFailure) return runtime.skipped(messages, 'summary-required', originalSize);
+  const summaryBody = generated ?? deterministicSummary(window.middle, window.previous,
+    prompt ? runtime.snapshot().lastFailure ?? 'unavailable' : 'summary-input-budget', summaryBudget);
+
+  // 6. 摘要作为历史参考，当前用户请求仍保留。技能重读标记由程序补回。
+  // commit 再检查硬预算和实际缩减，避免越压越大或无效重复压缩。
+  const summary = summaryMessage(elide(redact(summaryBody), summaryBudget) + reloadNotes, window.hasUserTurn);
+  const nextContext = assembleSummary(window.head, summary, window.tail);
+  return runtime.commit(messages, nextContext, tools, generated ? 'summary' : 'fallback');
+}
+
 export function selectMemories(_query: string, _hits: MemoryHit[], _limit: number): MemoryHit[] {
   // L3：对已按用户隔离的候选记录排序，不修改原始数据，并限制返回条数。
   throw new ExerciseNotImplemented('L3: implement learning/exercises.ts selectMemories');

@@ -1,3 +1,5 @@
+import { trimHistory } from '../src/core/compression/trim.js';
+import { ContextCompressor } from '../src/core/compression/compressor.js';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setImmediate as nextTurn } from 'node:timers/promises';
@@ -10,7 +12,7 @@ import { fromWireMessage, messageSize, toWireMessage, validateModelResponse,
 import { OpenAICompatibleProvider } from '../src/core/providers.js';
 import { ToolRegistry, validate, validateSchema } from '../src/core/tools.js';
 import { loadAlgorithms } from '../src/learning/index.js';
-import { compactHistory, reflect, runLoop, selectMemories, sessionKey } from '../src/learning/reference.js';
+import { reflect, runLoop, selectMemories, sessionKey } from '../src/learning/reference.js';
 
 const noop = () => undefined;
 const objectSchema = { type: 'object' };
@@ -117,7 +119,7 @@ test('history compaction retains a whole newest turn and never mutates SQLite-sh
   const input = [system, ...old, ...latest];
   const original = structuredClone(input);
   const budget = [system, ...latest].reduce((sum, message) => sum + messageSize(message), 0);
-  const compacted = compactHistory(input, budget);
+  const compacted = trimHistory(input, budget);
   assert.deepEqual(compacted, [system, ...latest]);
   assert.deepEqual(input, original);
   assert.equal(compacted[3].toolCallId, compacted[2].toolCalls?.[0].id);
@@ -129,16 +131,16 @@ test('history keeps a contiguous suffix instead of cherry-picking older small tu
   const large: Message = { role: 'user', content: 'x'.repeat(1000) };
   const newest: Message = { role: 'user', content: 'newest' };
   const budget = [system, oldest, newest].reduce((sum, message) => sum + messageSize(message), 0);
-  assert.deepEqual(compactHistory([system, oldest, large, newest], budget), [system, newest]);
+  assert.deepEqual(trimHistory([system, oldest, large, newest], budget), [system, newest]);
 });
 
 test('system-only and oversized newest contexts have explicit budget behavior', () => {
   const system: Message = { role: 'system', content: 'identity' };
-  assert.deepEqual(compactHistory([system], messageSize(system)), [system]);
-  assert.throws(() => compactHistory([system], messageSize(system) - 1), ContextBudgetExceeded);
-  assert.throws(() => compactHistory([system, { role: 'user', content: 'x'.repeat(500) }], 100), ContextBudgetExceeded);
-  assert.throws(() => compactHistory([system, toolReply()], 1000), /user/);
-  assert.throws(() => compactHistory([{ role: 'user', content: 'no system' }], 1000), /system/);
+  assert.deepEqual(trimHistory([system], messageSize(system)), [system]);
+  assert.throws(() => trimHistory([system], messageSize(system) - 1), ContextBudgetExceeded);
+  assert.throws(() => trimHistory([system, { role: 'user', content: 'x'.repeat(500) }], 100), ContextBudgetExceeded);
+  assert.throws(() => trimHistory([system, toolReply()], 1000), /user/);
+  assert.throws(() => trimHistory([{ role: 'user', content: 'no system' }], 1000), /system/);
 });
 
 test('memory ranking is stable, bounded and leaves scoped candidates unchanged', () => {
@@ -380,7 +382,8 @@ test('learner mode runs completed L1/L2 while remaining exercises still reject w
   const completed = await learner.runLoop(scripted([{ content: 'learner works' }]),
     new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
   assert.deepEqual(completed, [{ role: 'assistant', content: 'learner works' }]);
-  assert.deepEqual(learner.compactHistory([{ role: 'system', content: 'x' }], 1000), [{ role: 'system', content: 'x' }]);
+  const compressor = new ContextCompressor({ provider: scripted([]), maxChars: 1000, algorithm: learner.compactHistory });
+  assert.deepEqual((await compressor.compress([{ role: 'system', content: 'x' }], [])).messages, [{ role: 'system', content: 'x' }]);
   assert.throws(() => learner.selectMemories('query', [], 1), /L3/);
   assert.throws(() => learner.sessionKey('a', 'b', 'c'), /L4/);
   assert.throws(() => learner.reflect([]), /L5/);

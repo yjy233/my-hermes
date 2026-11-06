@@ -1,11 +1,12 @@
 /** 具名验收契约直接运行所选算法，不回退到参考实现。 */
 import assert from 'node:assert/strict';
 import { calculate } from '../core/builtin-tools.js';
-import { ContextBudgetExceeded, ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
-import { messageSize, type Emit, type Message, type ModelResponse, type Provider } from '../core/models.js';
+import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
+import { type Emit, type Message, type ModelResponse, type Provider } from '../core/models.js';
 import { ToolRegistry } from '../core/tools.js';
 import type { Algorithms } from '../learning/types.js';
 import type { MemoryHit } from '../memory/store.js';
+import { compressionCases } from './compression.js';
 
 export interface StageCase {
   name: string;
@@ -36,10 +37,6 @@ function successfulTrace(): Message[] {
     { role: 'tool', content: '{"ok":true,"result":4}', toolCallId: 'call-1' },
     { role: 'assistant', content: '4' },
   ];
-}
-
-function size(messages: Message[]): number {
-  return messages.reduce((sum, message) => sum + messageSize(message), 0);
 }
 
 function coreCases(algorithms: Algorithms, emit: Emit): StageCase[] {
@@ -161,37 +158,9 @@ function coreCases(algorithms: Algorithms, emit: Emit): StageCase[] {
   ];
 }
 
-function memoryCases(algorithms: Algorithms): StageCase[] {
+function memoryCases(algorithms: Algorithms, emit: Emit): StageCase[] {
   return [
-    { name: 'L2/exact-budget-whole-tool-turn', run() {
-      const identity = structuredClone(system);
-      const latest = successfulTrace();
-      const input: Message[] = [identity, { role: 'user', content: 'old question' },
-        { role: 'assistant', content: 'x'.repeat(1000) }, ...latest];
-      const original = structuredClone(input), expected = structuredClone([identity, ...latest]);
-      assert.deepEqual(algorithms.compactHistory(input, size(expected)), expected);
-      assert.deepEqual(input, original, 'Context selection cannot mutate full persisted history');
-    } },
-    { name: 'L2/system-only-and-overflow', run() {
-      const identity = structuredClone(system), original = structuredClone(identity);
-      assert.deepEqual(algorithms.compactHistory([identity], messageSize(identity)), [original]);
-      assert.throws(() => algorithms.compactHistory([identity], messageSize(original) - 1), ContextBudgetExceeded);
-    } },
-    { name: 'L2/latest-turn-overflow', run() {
-      const input = [structuredClone(system), ...successfulTrace()];
-      assert.throws(() => algorithms.compactHistory(input, size(input) - 1), ContextBudgetExceeded);
-    } },
-    { name: 'L2/contiguous-immutable-suffix', run() {
-      const identity = structuredClone(system);
-      const oldest: Message = { role: 'user', content: 'old small turn' };
-      const middle: Message = { role: 'user', content: 'x'.repeat(1000) };
-      const newest: Message = { role: 'user', content: 'new small turn' };
-      const input = [identity, oldest, middle, newest], original = structuredClone(input);
-      const expected = structuredClone([identity, newest]);
-      assert.deepEqual(algorithms.compactHistory(input, size([identity, oldest, newest])), expected,
-        'Keep a contiguous suffix rather than skipping a large middle turn');
-      assert.deepEqual(input, original);
-    } },
+    ...compressionCases(algorithms.compactHistory, emit),
     { name: 'L3/stable-relevance-without-mutation', run() {
       const hits: MemoryHit[] = [
         { sessionId: 'unrelated', content: 'gardening', score: 1 },
@@ -284,7 +253,7 @@ function evolutionCases(algorithms: Algorithms): StageCase[] {
 export function algorithmCases(stage: number, algorithms: Algorithms, emit: Emit = noop): StageCase[] {
   switch (stage) {
     case 1: return coreCases(algorithms, emit);
-    case 2: return memoryCases(algorithms);
+    case 2: return memoryCases(algorithms, emit);
     case 3: return routingCases(algorithms);
     case 4: return [];
     case 5: return evolutionCases(algorithms);

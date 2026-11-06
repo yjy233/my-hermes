@@ -2,7 +2,7 @@
 
 ## 记忆的三个层次
 
-- 短期上下文默认由异步 `ContextCompressor` 清理并摘要，工作上下文和冷却状态单独持久化；关闭后使用 L2 `compactHistory` 整轮裁剪。两种方式都不删改原始记录，详见 [上下文压缩](08-context-compression.md)。
+- 短期上下文默认由选定的 L2 `compactHistory` 异步清理并摘要，`ContextCompressor` 提供运行环境，工作上下文和冷却状态单独持久化；关闭后使用辅助函数 `trimHistory` 整轮裁剪。两种方式都不删改原始记录，详见 [上下文压缩](08-context-compression.md)。
 - 会话历史由 `node:sqlite` 存在 profile 的 `sessions.db` 中；成功轮次完整保留 assistant/tool 调用关系。检索是按 scope 过滤的 SQLite LIKE 子串匹配，`%`、`_` 按普通字符处理，未实现上游 FTS5 或向量检索。
 - 长期记忆位于 `memory/<sha256(scope)>/MEMORY.md` 和 `USER.md`；每文件默认 4000 字符，临时文件写入后原子替换。超限报错，不静默截断，人工编辑同样受读取预算检查。
 

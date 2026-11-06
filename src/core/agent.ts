@@ -5,6 +5,7 @@ import { requestSize, validateModelResponse, type Emit, type Message, type Provi
 import { ContextCompressor } from './compression/compressor.js';
 import { CompressingProvider } from './compression/provider.js';
 import { compressionSettings, type CompressionSettings } from './compression/settings.js';
+import { trimHistory } from './compression/trim.js';
 import { loadAlgorithms, type Algorithms, type Mode } from '../learning/index.js';
 import type { LongTermMemory, SessionStore } from '../memory/index.js';
 import type { SkillCatalog } from '../skills/catalog.js';
@@ -58,8 +59,8 @@ export class Agent {
     const user: Message = { role: 'user', content: text };
     const history = this.compression.enabled ? store.loadContextMessages(session.id) : store.loadMessages(session.id);
     const fullContext: Message[] = [{ role: 'system', content: prompt }, ...history, user];
-    // 语义压缩需要异步模型调用，放在 Provider 边界；关闭时使用 L2 的确定性整轮裁剪。
-    const context = this.compression.enabled ? fullContext : this.algorithms.compactHistory(fullContext, this.contextChars);
+    // L2 在每次模型请求前异步执行；关闭语义压缩时只使用独立的同步裁剪辅助策略。
+    const context = this.compression.enabled ? fullContext : trimHistory(fullContext, this.contextChars);
     const registry = buildRegistry(memory, store, skills, scope, this.algorithms);
     const plugins = new PluginManager(registry);
     await abortable(plugins.load(this.options.plugins ?? []), signal);
@@ -74,7 +75,8 @@ export class Agent {
     emit('turn.start', {});
     const previousState = store.loadCompressionState(session.id);
     const compressor = new ContextCompressor({ provider: this.options.provider, summaryProvider: this.options.summaryProvider,
-      maxChars: this.contextChars, settings: this.compression, state: previousState, memory: prompt, emit });
+      maxChars: this.contextChars, settings: this.compression, state: previousState, memory: prompt, emit,
+      algorithm: this.algorithms.compactHistory });
     const provider = new CompressingProvider(new BudgetProvider(this.options.provider, this.contextChars), compressor, this.contextChars);
     let delta: Message[];
     try {

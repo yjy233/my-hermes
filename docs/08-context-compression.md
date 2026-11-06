@@ -8,7 +8,8 @@
 flowchart TD
     A[恢复工作上下文和冻结的 system] --> B[runLoop 新增消息]
     B --> C[CompressingProvider]
-    C --> D{达到阈值?}
+    C --> L2[选定的 L2 compactHistory]
+    L2 --> D{达到阈值?}
     D -->|是| E[清理旧工具结果 / 选择头中尾]
     E --> F[摘要模型 / 有界回退]
     F --> G[检查工具配对和实际缩减]
@@ -20,6 +21,8 @@ flowchart TD
 ```
 
 每次模型请求前检查，包括同一用户轮内的多次工具调用。默认阈值是 `contextChars` 的 50%；计数包含序列化消息、reasoning 和工具 schema。预算继续使用本项目的 JavaScript 字符计数，**没有把字符数当作 token，也未实现上游的真实 usage anchor**。
+
+主流程位于 `src/learning/exercises.ts` 与 `src/learning/reference.ts` 的异步 `compactHistory(messages, tools, runtime, signal?, force?)`。`Agent` 将所选算法传给 `ContextCompressor`，每次请求以及溢出重试都调用同一个 L2。`core/compression/compressor.ts` 提供模型请求、失败分类、冷却和提交校验；prompt 与分区仍分别位于 `text.ts`、`window.ts`。学习者代码出错会直接失败，不自动回退到参考算法。
 
 压缩分为以下步骤：
 
@@ -86,7 +89,7 @@ HTTP 错误正文最多读取 8192 字节用于分类；错误和 trace 只包�
 
 `summaryModel` 为空时使用主 Provider；指定后在相同 API 地址和凭证下创建辅助模型。代码调用也可通过 `AgentOptions.summaryProvider` 提供不同 Provider。摘要调用同样占用总回合超时。默认自动启用，无需 CLI 开关；`--trace` 可观察 `context.compression.*` 和 `context.summary.*`。DemoProvider 不具备语言摘要能力，长会话的语义效果应使用真实模型评估。
 
-`compression.enabled: false` 时使用 L2 `compactHistory` 的整轮裁剪。L2 的 learner 与 reference 都已有独立实现；L3/L4/L5 仍是练习。`check --stage 2 --mode learner` 的 L2 case 应通过，阶段总体仍因 L3 未实现而失败。
+`compression.enabled: false` 时使用 `core/compression/trim.ts` 的 `trimHistory` 辅助策略。L2 本身是异步语义压缩，learner 与 reference 都已有独立主流程；L3/L4/L5 仍是练习。`check --stage 2 --mode learner` 的十个 L2 case 应通过，阶段总体仍因 L3 未实现而失败。
 
 ```sh
 node --import tsx --test tests/compression.test.ts tests/compression-http.test.ts

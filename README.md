@@ -44,7 +44,7 @@ npm run build
 - Core 的 `--mode reference/learner` 选择完整算法或 [exercises.ts](src/learning/exercises.ts) 中的 L1～L5。
 - Kimi 的 `--provider-mode learner/reference` 独立选择 [kimi.ts](src/core/providers/kimi.ts) 中已完成的主实现或对照版；主实现不会回退到参考版。
 
-基础设施、Kimi 连接、L1 runLoop 和 L2 compactHistory 已实现，可阅读中文注释、调试并与参考版对照。运行时另有默认启用的异步语义压缩。**L3～L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
+基础设施、Kimi 连接、L1 runLoop 和 L2 compactHistory 已实现，可阅读中文注释、调试并与参考版对照。L2 就是运行时默认启用的异步语义压缩主流程，`--mode` 决定实际调用哪份实现。**L3～L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
 
 | 阶段 | 学习内容 | 当前状态 / 学习任务 | 独立验收 |
 | --- | --- | --- | --- |
@@ -86,7 +86,7 @@ npm run dev -- chat --provider demo --mode reference --message '/skill study-not
 npm run dev -- chat --provider demo --mode reference --plugin ./examples/plugins/word-count.ts
 ```
 
-长期记忆是按用户隔离的 `MEMORY.md` / `USER.md`，每文件默认 4000 字符，超限报错。`/remember` 是整篇替换演示；已有会话的系统提示保持快照，新会话读取更新后的记忆。上下文默认采用旧工具结果清理、头尾保护和中段模型摘要；支持辅助模型回退、失败保留、冷却与重启恢复。SQLite 另外保留成功轮次的完整消息，历史检索仍为子串召回。压缩提示词、配置与边界见 [上下文压缩](docs/08-context-compression.md)；关闭语义压缩时使用 L2 整轮裁剪。
+长期记忆是按用户隔离的 `MEMORY.md` / `USER.md`，每文件默认 4000 字符，超限报错。`/remember` 是整篇替换演示；已有会话的系统提示保持快照，新会话读取更新后的记忆。L2 默认采用旧工具结果清理、头尾保护和中段模型摘要；支持辅助模型回退、失败保留、冷却与重启恢复。SQLite 另外保留成功轮次的完整消息，历史检索仍为子串召回。压缩提示词、配置与边界见 [上下文压缩](docs/08-context-compression.md)；关闭语义压缩时使用独立辅助函数 `trimHistory` 整轮裁剪。
 
 Skill 只提前注入名称/描述，正文通过工具按需读取。Plugin 是显式信任的 TypeScript / JavaScript 模块，导出 `register(context)` 注册工具与 Hook。离线 Demo 不自动选择任意插件工具；阶段 4 直接验收插件调用，真实模型可根据 schema 选择。插件不是沙箱，源文件修改后需重启进程。
 

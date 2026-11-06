@@ -31,8 +31,27 @@ for (const stage of [2, 3, 5]) test(`stage ${stage} learner TODO is a named fail
 test('learner memory stage passes every L2 contract; only L3 remains an exercise', async () => {
   const result = await checkStage(2, 'learner');
   const compression = result.cases.filter(item => item.name.startsWith('L2/'));
-  assert.equal(compression.length, 4);
+  assert.equal(compression.length, 10);
   assert.ok(compression.every(item => item.status === 'passed'), JSON.stringify(compression));
+});
+
+test('stage 2 rejects an unfinished L2 instead of falling back to the reference compressor', async () => {
+  const result = await checkStage(2, 'learner', {}, {
+    ...loadAlgorithms('reference'),
+    async compactHistory() { throw new ExerciseNotImplemented('L2 injected unfinished algorithm'); },
+  });
+  const cases = result.cases.filter(item => item.name.startsWith('L2/'));
+  assert.equal(cases.length, 10);
+  assert.ok(cases.every(item => item.status === 'failed'));
+  assert.ok(cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
+});
+
+test('stage 2 rejects a no-op L2 that silently skips summarization', async () => {
+  const result = await checkStage(2, 'learner', {}, {
+    ...loadAlgorithms('reference'), async compactHistory(messages) { return { messages, changed: false }; },
+  });
+  assert.equal(result.cases.find(item => item.name === 'L2/structured-summary-prompt-and-immutability')?.status, 'failed');
+  assert.equal(result.cases.find(item => item.name === 'L2/auxiliary-fallback-once')?.status, 'failed');
 });
 
 test('completed learner loop passes all nine Core contracts independently of the remaining exercises', async () => {

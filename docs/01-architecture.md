@@ -49,7 +49,8 @@ flowchart TB
 | 接口 | 契约 |
 | --- | --- |
 | `Provider.complete(messages, tools, signal?)` | 返回 `Promise<ModelResponse>`；支持取消与统一响应校验 |
-| `ContextCompressor.compress(messages, tools, signal?, force?)` | 异步清理/摘要，返回是否有效缩减；失败保留、冷却与有界回退 |
+| `Algorithms.compactHistory(messages, tools, runtime, signal?, force?)` | L2 异步压缩主流程，返回 `Promise<CompressionResult>`；按 mode 选择 learner/reference |
+| `ContextCompressor.compress(messages, tools, signal?, force?)` | 调用选定 L2；向算法提供模型请求、冷却状态和提交校验 |
 | `ToolRegistry.schemas()` / `execute(call, signal?)` | 返回工具 schema / `Promise<Message>`；验参、限时、结构化错误 |
 | `SessionStore(path)` | `getOrCreate`、`setSystemPrompt`、`loadMessages`、`appendMessages`、`search`、`listSessions`、`close` |
 | `LongTermMemory(root, maxChars = 4000)` | `snapshot(scope)`、`read(scope, target)`、`write(scope, target, content)`；target 只允许两个记忆文件 |
@@ -58,7 +59,7 @@ flowchart TB
 | `EvolutionManager(root, skillsRoot)` | `propose`、`listProposals`、`approve`；提升只由本地 CLI 显式调用 |
 | `Gateway.handle(message, signal?)` | 归一化事件 → 授权 → 会话串行 → Agent → 缓存回复 |
 
-L0 是 `src/core/providers/kimi.ts` 的 complete；其余学习接口在 `src/learning/exercises.ts`：`runLoop`、`compactHistory`、`selectMemories`、`sessionKey`、`reflect`。消息大小与响应检查辅助函数位于 `core/models.ts`，共享异常位于 `core/errors.ts`。
+L0 是 `src/core/providers/kimi.ts` 的 complete；其余学习接口在 `src/learning/exercises.ts`：`runLoop`、`compactHistory`、`selectMemories`、`sessionKey`、`reflect`。L2 直接编排清理、分区、prompt 构造、摘要请求和失败决策；`core/compression` 提供共享辅助函数与运行环境，关闭语义压缩时才使用 `trim.ts` 的整轮裁剪。消息大小与响应检查辅助函数位于 `core/models.ts`，共享异常位于 `core/errors.ts`。
 
 ## 数据流与故障
 

@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { abortable } from '../core/async.js';
-import { ContextBudgetExceeded, StepLimitExceeded } from '../core/errors.js';
-import { messageSize, validateModelResponse, type Emit, type Message, type Provider } from '../core/models.js';
+import { StepLimitExceeded } from '../core/errors.js';
+import { requestSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from '../core/models.js';
+import type { CompressionResult, CompressionRuntime } from '../core/compression/types.js';
+import { assembleSummary, buildSummaryPrompt, deterministicSummary, elide, redact, summaryMessage, withoutSummaries } from '../core/compression/text.js';
+import { messagesSize, planWindow, pruneHistory } from '../core/compression/window.js';
 import type { ToolRegistry } from '../core/tools.js';
 import type { MemoryHit } from '../memory/store.js';
 
@@ -35,28 +38,45 @@ export async function runLoop(provider: Provider, registry: ToolRegistry, messag
   throw new StepLimitExceeded(`No final answer after ${maxSteps} model steps`);
 }
 
-/** L2：连续保留最近的完整用户轮次，不改动 SQLite 中的原始历史。 */
-export function compactHistory(messages: Message[], maxChars: number): Message[] {
-  if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error('maxChars must be positive');
-  if (messages[0]?.role !== 'system') throw new Error('Context must begin with a system message');
-  let budget = maxChars - messageSize(messages[0]);
-  if (budget < 0) throw new ContextBudgetExceeded('System prompt exceeds context budget');
-  const groups: Message[][] = [];
-  for (const message of messages.slice(1)) {
-    if (message.role === 'user') groups.push([]);
-    if (!groups.length) throw new Error('Expected user message after system');
-    groups.at(-1)!.push(message);
+/** L2：Hermes 式异步压缩主流程；纯函数辅助策略见 core/compression/trim.ts。 */
+export async function compactHistory(messages: Message[], tools: ToolSchema[], runtime: CompressionRuntime,
+  signal?: AbortSignal, force = false): Promise<CompressionResult> {
+  signal?.throwIfAborted();
+  const { settings, maxChars } = runtime, before = requestSize(messages, tools), state = runtime.snapshot();
+  if (!settings.enabled || (!force && before < maxChars * settings.threshold)) return { messages, changed: false };
+  if (!force && Date.now() < state.cooldownUntil) return runtime.skipped(messages, 'cooldown', before);
+  if (!force && before <= maxChars && before < state.nextAttemptChars) return runtime.skipped(messages, 'no-progress-backoff', before);
+  runtime.emit('compression.start', { beforeChars: before, forced: force });
+  const available = maxChars - JSON.stringify(tools).length;
+  if (available < 512) return runtime.skipped(messages, 'tool-schemas-exhaust-budget', before, true);
+
+  const pruned = pruneHistory(messages, available, settings), prunedSize = requestSize(pruned, tools);
+  if (!force && prunedSize < maxChars * settings.threshold && before - prunedSize >= 256) {
+    return runtime.commit(messages, pruned, tools, 'prune');
   }
-  const kept: Message[][] = [];
-  for (let i = groups.length - 1; i >= 0; i--) {
-    const size = groups[i].reduce((sum, message) => sum + messageSize(message), 0);
-    if (size > budget) {
-      if (!kept.length) throw new ContextBudgetExceeded('System prompt and newest turn exceed budget');
-      break;
-    }
-    kept.unshift(groups[i]); budget -= size;
+  const window = planWindow(pruned, available, settings);
+  if (!window) return runtime.skipped(messages, 'no-middle-window', before, true);
+  const reload = window.skills.length ? '\n\n## Skills to reload\n' + window.skills.map(name =>
+    `[Reload skill: ${name}] Call skill_read before using its procedure.`).join('\n') : '';
+  const envelope = messagesSize(assembleSummary(window.head, summaryMessage(reload), window.tail));
+  const budget = Math.floor(Math.min(settings.summaryChars, available * 0.2, available - envelope));
+  if (budget < 256) return runtime.skipped(messages, 'protected-context-exhausts-budget', before, true);
+  if (messagesSize(window.middle) + window.previous.length < budget + 256) {
+    return runtime.skipped(messages, 'middle-too-small', before, true);
   }
-  return [messages[0], ...kept.flat()];
+
+  const latestUser = withoutSummaries(messages).findLast(row => row.role === 'user');
+  const prompt = buildSummaryPrompt({ middle: window.middle, previous: window.previous,
+    memory: runtime.memory, focus: runtime.focus ?? latestUser?.content ?? '', summaryChars: budget,
+    inputChars: maxChars, date: new Date().toISOString().slice(0, 10), hasUserTurn: window.hasUserTurn });
+  const generated = prompt ? await runtime.generate(prompt, signal) : null;
+  signal?.throwIfAborted();
+  if (!generated && prompt && runtime.mustPreserveHistory()) return runtime.skipped(messages, 'summary-failed-preserve-history', before);
+  if (!generated && settings.abortOnFailure) return runtime.skipped(messages, 'summary-required', before);
+  const body = generated ?? deterministicSummary(window.middle, window.previous,
+    prompt ? runtime.snapshot().lastFailure ?? 'unavailable' : 'summary-input-budget', budget);
+  const summary = summaryMessage(elide(redact(body), budget) + reload, window.hasUserTurn);
+  return runtime.commit(messages, assembleSummary(window.head, summary, window.tail), tools, generated ? 'summary' : 'fallback');
 }
 
 export function selectMemories(query: string, hits: MemoryHit[], limit: number): MemoryHit[] {

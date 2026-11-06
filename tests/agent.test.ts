@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
 import { Agent, BudgetProvider, validateTurn, type AgentOptions } from '../src/core/agent.js';
-import { ContextBudgetExceeded, TimeoutError } from '../src/core/errors.js';
+import { ContextBudgetExceeded, ExerciseNotImplemented, TimeoutError } from '../src/core/errors.js';
 import { messageSize, type Message, type ModelResponse, type Provider, type ToolSchema } from '../src/core/models.js';
 import type { Algorithms, Mode } from '../src/learning/index.js';
 import * as reference from '../src/learning/reference.js';
@@ -33,6 +33,20 @@ function fixture(t: TestContext, provider: Provider,
 /** 不修改学习者源码或全局模块，模拟已完成或存在缺陷的练习实现。 */
 function injectAlgorithms(agent: Agent, overrides: Partial<Algorithms>): void {
   (agent as unknown as { algorithms: Algorithms }).algorithms = { ...reference, ...overrides };
+}
+
+for (const mode of ['reference', 'learner'] as const) {
+  test(`Agent invokes selected L2 even below threshold and never bypasses its failure in ${mode} mode`, async t => {
+    let calls = 0, modelCalls = 0;
+    const provider: Provider = { async complete() { modelCalls++; return { content: 'unexpected' }; } };
+    const { agent, messages } = fixture(t, provider, { mode });
+    const failure = new ExerciseNotImplemented('L2 selected algorithm');
+    injectAlgorithms(agent, { async compactHistory(_messages, tools) {
+      calls++; assert.ok(tools.length > 0); throw failure;
+    } });
+    await assert.rejects(() => agent.run('session', 'alice', 'hello'), error => error === failure);
+    assert.equal(calls, 1); assert.equal(modelCalls, 0); assert.deepEqual(messages(), []);
+  });
 }
 
 test('request budget includes serialized tool schemas, allowing the exact bound only', async () => {

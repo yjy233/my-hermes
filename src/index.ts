@@ -18,3 +18,4 @@ export { ProfileLock } from './profile-lock.js';
 export { loadEnvironmentFile, type EnvironmentFileResult } from './environment.js';
 export { ContextCompressor, type CompressorOptions, type CompressionResult } from './core/compression/compressor.js';
 export { compressionSettings, DEFAULT_COMPRESSION, type CompressionSettings, type CompressionState } from './core/compression/settings.js';
+export type { CompactHistory, CompressionRuntime } from './core/compression/types.js';

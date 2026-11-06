@@ -19,7 +19,7 @@ npm run dev -- check --stage 0 --mode learner
 | --- | --- | --- | --- | --- |
 | 0 Kimi Provider | 已实现，阅读与回归 | `src/core/providers/kimi.ts`、`src/core/models.ts` | mock HTTP 请求、文本/工具/推理字段往返、错误与取消 | `check --stage 0 --mode learner` |
 | 1 Core | L1 已实现，阅读 / 调试 / 对照 | `src/learning/exercises.ts`、`src/core/tools.ts` | 最终文本、工具结果与 ID 配对、循环预算及非法响应处理 | `check --stage 1 --mode learner` |
-| 2 Memory | L2 `compactHistory`、L3 `selectMemories` | `src/learning/exercises.ts`、`src/memory/store.ts` | 完整轮次预算、不修改输入、排序与条数限制、记忆隔离 | `check --stage 2 --mode learner` |
+| 2 Memory | L2 异步 `compactHistory`、L3 `selectMemories` | `src/learning/exercises.ts`、`src/core/compression/`、`src/memory/store.ts` | 结构化摘要、工具配对、回退/冷却/取消、不修改输入、召回排序与隔离 | `check --stage 2 --mode learner` |
 | 3 Gateway | L4 `sessionKey` | `src/learning/exercises.ts`、`src/gateway/router.ts` | 三维路由稳定无碰撞、同事件只执行一次、用户隔离 | `check --stage 3 --mode learner` |
 | 4 Extensions | 无必填算法；扩展自己的实例 | `src/skills/catalog.ts`、`src/plugins/manager.ts` | 内置 Skill 按需读取、测试插件注册/执行与扩展边界 | `check --stage 4 --mode learner` |
 | 5 Evolution | L5 `reflect` | `src/learning/exercises.ts`、`src/evolution/manager.ts` | 成功轨迹生成候选，纯聊天/失败/未完成轨迹不生成，批准后才可发现 | `check --stage 5 --mode learner` |
@@ -97,16 +97,19 @@ npm run dev -- check --stage 1 --mode learner --trace
 
 ## 阶段 2：短期上下文与长期记忆（L2/L3）
 
-L2 `compactHistory` 已完成，四个 L2 阶段 case 应通过；下一步练习是 L3 `selectMemories`。先读 `src/memory/store.ts`、`src/memory/long-term.ts` 与 `src/core/builtin-tools.ts`，区分完整历史和下一次模型可见上下文。
+L2 `compactHistory` 已完成，十个 L2 阶段 case 应通过；下一步练习是 L3 `selectMemories`。L2 的 learner 与 reference 都直接实现异步压缩主流程，运行时不会绕过所选版本。先在 `exercises.ts` 的 L2 设置断点，再进入 `core/compression` 的辅助方法。
 
-L2 `compactHistory(messages, maxChars)`：
+L2 `compactHistory(messages, tools, runtime, signal?, force?)` 返回 `Promise<CompressionResult>`：
 
-- 保留首条 system，按 user 边界组成完整轮次，优先保留连续的最近轮次。
-- 使用 `core/models.ts` 的 `messageSize` 计算序列化长度，不能只计算正文。Core 在请求前另外计入工具 schema。
-- 不拆散 assistant 调用与 tool 返回，不删除数据库原始记录，不修改输入数组。
-- 预算必须为正；system 自身或 system 加最新轮仍超预算时抛 `ContextBudgetExceeded`。
+- 结合消息与工具 schema 大小，检查软阈值、冷却和无进展退避；force 用于远端确认溢出后的有界恢复。
+- 先清理旧工具输出，再按完整工具组保护头尾、选择摘要中段和预算。
+- 组装旧摘要、冻结记忆、中段轨迹、当前请求重点，异步请求模型生成结构化摘要。
+- 根据失败类别保留完整历史或生成本地兜底；取消原样传播，不转成降级摘要。
+- 重组摘要与近期消息，补回 Skill 重读标记；提交前验证预算和实际缩减。不修改原始输入或数据库历史。
 
-L2 的纯函数是确定性整轮裁剪，关闭语义压缩时使用。运行时默认启用 `src/core/compression/` 的异步模型摘要，在每次请求前检查预算；提示词、持久化和异常处理见 [上下文压缩](08-context-compression.md)。对应回归为 `tests/compression.test.ts` 和 `tests/compression-http.test.ts`。
+`CompressionRuntime` 提供模型请求、辅助模型回退、超时、冷却状态和提交校验。`window.ts` 负责分区与工具配对，`text.ts` 负责 prompt 和摘要重组。旧同步裁剪已移至 `core/compression/trim.ts` 的 `trimHistory`，仅在关闭语义压缩时使用。旧的 `(messages, maxChars)` L2 调用需要迁移到新的异步接口。
+
+阶段验收由 `src/stages/compression.ts` 直接调用选定算法，覆盖阈值、prompt、工具清理、当前任务保留、重复摘要、失败冷却、辅助回退、取消、兜底与受保护区域。摘要请求使用离线 stub，不受 L3/L4 是否完成影响。完整细节见 [上下文压缩](08-context-compression.md)。
 
 L3 `selectMemories(query, hits, limit)`：
 

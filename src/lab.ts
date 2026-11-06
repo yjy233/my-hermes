@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { calculate, objectSchema } from './core/builtin-tools.js';
-import { messageSize, type Emit, type Message } from './core/models.js';
+import { type Emit, type Message } from './core/models.js';
 import { DemoProvider } from './core/providers.js';
 import { ToolRegistry } from './core/tools.js';
+import { ContextCompressor } from './core/compression/compressor.js';
 import { EvolutionManager } from './evolution/index.js';
 import { Gateway } from './gateway/index.js';
 import { loadAlgorithms, type Algorithms, type Mode } from './learning/index.js';
@@ -76,15 +77,17 @@ async function runScenario(stage: number, algorithms: Algorithms, emit: Emit,
       const system: Message = { role: 'system', content: 'fixed identity' };
       const old: Message[] = [{ role: 'user', content: 'old' }, { role: 'assistant', content: 'x'.repeat(500) }];
       const latest: Message[] = [{ role: 'user', content: 'new' }, { role: 'assistant', content: 'done' }];
-      const budget = [system, ...latest].reduce((size, message) => size + messageSize(message), 0);
-      assert.deepEqual(algorithms.compactHistory([system, ...old, ...latest], budget), [system, ...latest]);
+      const compressor = new ContextCompressor({ provider: new DemoProvider(), maxChars: 24_000,
+        algorithm: algorithms.compactHistory, emit });
+      const context = await compressor.compress([system, ...old, ...latest], [], signal);
+      assert.deepEqual(context.messages, [system, ...old, ...latest]);
       const hits = [{ sessionId: 'old', content: 'gardening', score: 1 }, { sessionId: 'new', content: 'TypeScript tooling', score: 1 }];
       assert.equal(algorithms.selectMemories('TypeScript', hits, 1)[0].content, 'TypeScript tooling');
       const memory = new LongTermMemory(join(root, 'memory'));
       memory.write('alice', 'MEMORY.md', 'TypeScript tooling');
       assert.match(memory.snapshot('alice'), /TypeScript tooling/);
       assert.doesNotMatch(memory.snapshot('bob'), /TypeScript tooling/);
-      return { stage, status: 'passed', contextMessages: 3 };
+      return { stage, status: 'passed', contextMessages: context.messages.length };
     }
     if (stage === 3) {
       let executions = 0;
