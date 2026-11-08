@@ -3,7 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { assertFiniteJson, type Message } from '../core/models.js';
+import { assertFiniteJson, assertToolBoundary, type Message } from '../core/models.js';
+import { initialCompressionState, type CompressionState } from '../core/compression/settings.js';
 
 export interface Session {
   id: string;
@@ -13,6 +14,8 @@ export interface Session {
 }
 export interface SessionRecord extends Session { createdAt: string; messageCount: number }
 export interface MemoryHit { sessionId: string; content: string; score: number }
+/** 默认 Hermes 式压缩保存的可继续执行的工作上下文，与摘要代际检查点分表。 */
+export interface WorkingContextCheckpoint { messages: Message[]; state: CompressionState }
 
 /** 摘要只是原始历史的派生视图；coveredCount 不包含冻结的 system 消息。 */
 export interface ContextCheckpoint {
@@ -58,6 +61,9 @@ function parseMessage(payload: string): Message {
   if (message.reasoningContent !== undefined && typeof message.reasoningContent !== 'string') {
     throw new Error('Invalid stored reasoning content');
   }
+  if (message.contextSummary !== undefined && (!message.contextSummary || typeof message.contextSummary.body !== 'string' ||
+      typeof message.contextSummary.hasUserTurn !== 'boolean' || (message.contextSummary.originalContent !== undefined &&
+        typeof message.contextSummary.originalContent !== 'string'))) throw new Error('Invalid stored summary marker');
   return message;
 }
 
@@ -68,6 +74,7 @@ function serializeMessage(message: Message): { payload: string; content: string 
     ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
     ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
     ...(message.reasoningContent !== undefined ? { reasoningContent: message.reasoningContent } : {}),
+    ...(message.contextSummary !== undefined ? { contextSummary: message.contextSummary } : {}),
   };
   assertFiniteJson(clean);
   const payload = JSON.stringify(clean);
@@ -83,6 +90,17 @@ function serializeMessage(message: Message): { payload: string; content: string 
 export function hashContextPrefix(messages: Message[]): string {
   const payloads = messages.map(message => serializeMessage(message).payload);
   return createHash('sha256').update(`[${payloads.join(',')}]`).digest('hex');
+}
+
+/** 冷却状态只保存固定类别和有限计数，不能持久化 Provider 的任意错误正文。 */
+function validateCompressionState(value: unknown): asserts value is CompressionState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid compression state');
+  const state = value as CompressionState;
+  if (![state.cooldownUntil, state.failures, state.nextAttemptChars].every(item => Number.isFinite(item) && item >= 0)
+      || (state.lastFailure !== undefined && !['access', 'network', 'timeout', 'overload', 'empty', 'truncated', 'invalid', 'other'].includes(state.lastFailure))) {
+    throw new Error('Invalid compression state');
+  }
+  assertFiniteJson(state);
 }
 
 export class SessionStore {
@@ -114,15 +132,41 @@ export class SessionStore {
       );
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, id);
       CREATE INDEX IF NOT EXISTS sessions_scope ON sessions(scope);
-      CREATE TABLE IF NOT EXISTS context_checkpoints (
-        session_id TEXT PRIMARY KEY REFERENCES sessions(id),
-        generation INTEGER NOT NULL CHECK (generation >= 1),
-        covered_count INTEGER NOT NULL CHECK (covered_count > 0),
-        prefix_hash TEXT NOT NULL,
-        summary TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
     `);
+    // 两条开发线曾给不同格式使用同一个表名。只迁移可明确识别的旧摘要表，
+    // 不重写 messages；远端工作上下文表保持原名，摘要代际表使用独立名称。
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const columns = this.database.prepare('PRAGMA table_info(context_checkpoints)').all().map(row => String(row.name));
+      if (columns.includes('generation') && !columns.includes('compression_state')) {
+        const existing = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'summary_checkpoints'").get();
+        if (existing) throw new Error('Both legacy and current summary checkpoint tables exist; refusing to overwrite either');
+        this.database.exec('ALTER TABLE context_checkpoints RENAME TO summary_checkpoints');
+      } else if (columns.length && !['session_id', 'payload', 'message_count', 'compression_state'].every(name => columns.includes(name))) {
+        throw new Error('Unknown context checkpoint table format');
+      }
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS context_checkpoints (
+          session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+          payload TEXT,
+          message_count INTEGER NOT NULL DEFAULT -1,
+          compression_state TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS summary_checkpoints (
+          session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+          generation INTEGER NOT NULL CHECK (generation >= 1),
+          covered_count INTEGER NOT NULL CHECK (covered_count > 0),
+          prefix_hash TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      this.database.close();
+      throw error;
+    }
   }
 
   getOrCreate(key: string, scope: string): Session {
@@ -155,15 +199,41 @@ export class SessionStore {
     ).all(id).map(row => parseMessage(String(row.payload)));
   }
 
-  appendMessages(id: string, messages: Message[]): void {
-    this.commitTurn(id, messages);
+  /** 保留远端第三参数接口，原始消息与工作上下文仍在同一事务提交。 */
+  appendMessages(id: string, messages: Message[], checkpoint?: WorkingContextCheckpoint): void {
+    this.commitTurn(id, messages, undefined, checkpoint);
+  }
+
+  /** 工作上下文只在与原始历史水位匹配时采用；旧库和外部追加自动回到完整历史。 */
+  loadContextMessages(id: string): Message[] {
+    const row = this.database.prepare('SELECT payload, message_count FROM context_checkpoints WHERE session_id = ?').get(id);
+    const count = this.database.prepare('SELECT COUNT(*) AS count FROM messages WHERE session_id = ?').get(id)!;
+    if (!row?.payload || Number(row.message_count) !== Number(count.count)) return this.loadMessages(id);
+    const payloads: unknown = JSON.parse(String(row.payload));
+    if (!Array.isArray(payloads)) throw new Error('Invalid context checkpoint');
+    return payloads.map(payload => parseMessage(JSON.stringify(payload)));
+  }
+
+  loadCompressionState(id: string): CompressionState {
+    const row = this.database.prepare('SELECT compression_state FROM context_checkpoints WHERE session_id = ?').get(id);
+    if (!row) return initialCompressionState();
+    const state: unknown = JSON.parse(String(row.compression_state));
+    validateCompressionState(state);
+    return state;
+  }
+
+  /** 失败只更新冷却状态，不发布未完成回合的摘要或消息。 */
+  saveCompressionState(id: string, state: CompressionState): void {
+    validateCompressionState(state);
+    this.database.prepare('INSERT INTO context_checkpoints (session_id, compression_state) VALUES (?, ?) '
+      + 'ON CONFLICT(session_id) DO UPDATE SET compression_state = excluded.compression_state').run(id, JSON.stringify(state));
   }
 
   /** 按会话读取最近一次成功提交的摘要；没有摘要的旧数据库返回 null。 */
   loadCheckpoint(id: string): ContextCheckpoint | null {
     const row = this.database.prepare(
       'SELECT session_id, generation, covered_count, prefix_hash, summary, updated_at '
-      + 'FROM context_checkpoints WHERE session_id = ?',
+      + 'FROM summary_checkpoints WHERE session_id = ?',
     ).get(id);
     if (!row) return null;
     const checkpoint: ContextCheckpoint = {
@@ -188,9 +258,14 @@ export class SessionStore {
    * 只有最终答复已完成后，Agent 才调用本方法；失败或取消时不调用即可保留旧状态。
    * 写入前重新校验指纹和摘要代际，拒绝迟到结果覆盖更新的摘要。
    */
-  commitTurn(id: string, messages: Message[], checkpoint?: ContextCheckpointDraft): void {
+  commitTurn(id: string, messages: Message[], checkpoint?: ContextCheckpointDraft, working?: WorkingContextCheckpoint): void {
     // 开始事务前先序列化，避免只写入畸形轮次的一部分。
     const serialized = messages.map(serializeMessage);
+    let active: string | undefined;
+    if (working) {
+      validateCompressionState(working.state);
+      active = '[' + working.messages.map(message => serializeMessage(message).payload).join(',') + ']';
+    }
     if (checkpoint) {
       if (!Number.isSafeInteger(checkpoint.coveredCount) || checkpoint.coveredCount < 1) {
         throw new Error('Checkpoint coveredCount must be a positive safe integer');
@@ -227,15 +302,22 @@ export class SessionStore {
         if (hashContextPrefix(transcript.slice(0, checkpoint.coveredCount)) !== checkpoint.prefixHash) {
           throw new Error('Checkpoint history prefix hash mismatch');
         }
+        assertToolBoundary(transcript, checkpoint.coveredCount);
       }
       for (const { payload, content } of serialized) insert.run(id, payload, content);
       if (checkpoint) {
         this.database.prepare(
-          'INSERT INTO context_checkpoints (session_id, generation, covered_count, prefix_hash, summary) '
+          'INSERT INTO summary_checkpoints (session_id, generation, covered_count, prefix_hash, summary) '
           + 'VALUES (?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET '
           + 'generation = excluded.generation, covered_count = excluded.covered_count, '
           + 'prefix_hash = excluded.prefix_hash, summary = excluded.summary, updated_at = CURRENT_TIMESTAMP',
         ).run(id, checkpoint.expectedGeneration + 1, checkpoint.coveredCount, checkpoint.prefixHash, checkpoint.summary);
+      }
+      if (working && active !== undefined) {
+        const count = this.database.prepare('SELECT COUNT(*) AS count FROM messages WHERE session_id = ?').get(id)!;
+        this.database.prepare('INSERT INTO context_checkpoints (session_id, payload, message_count, compression_state) VALUES (?, ?, ?, ?) '
+          + 'ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, message_count = excluded.message_count, '
+          + 'compression_state = excluded.compression_state').run(id, active, Number(count.count), JSON.stringify(working.state));
       }
       this.database.exec('COMMIT');
     } catch (error) {

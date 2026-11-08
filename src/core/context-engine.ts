@@ -6,7 +6,7 @@
  */
 import { abortable, withTimeout } from './async.js';
 import { ContextBudgetExceeded, TimeoutError } from './errors.js';
-import { messageSize, validateModelResponse, type Emit, type Message, type ModelResponse,
+import { assertToolBoundary, messageSize, validateModelResponse, type Emit, type Message, type ModelResponse,
   type Provider, type ToolSchema } from './models.js';
 import { hashContextPrefix, type ContextCheckpoint, type ContextCheckpointDraft } from '../memory/store.js';
 
@@ -29,7 +29,8 @@ export const SUMMARY_TASK = '[context-summary]';
 export const MEMORY_FLUSH_TASK = '[memory-flush]';
 
 export function resolveCompressionOptions(input: CompressionOptions = {}): Required<CompressionOptions> {
-  const value = { ...DEFAULT_COMPRESSION, ...input };
+  const value = { ...DEFAULT_COMPRESSION,
+    ...Object.fromEntries(Object.entries(input).filter(([, item]) => item !== undefined)) };
   if (typeof value.enabled !== 'boolean' || typeof value.memoryFlush !== 'boolean'
       || !Number.isFinite(value.threshold) || value.threshold <= 0 || value.threshold > 1
       || !Number.isFinite(value.targetRatio) || value.targetRatio <= 0 || value.targetRatio >= value.threshold
@@ -262,6 +263,7 @@ export class ContextEngine implements Provider {
         || hashContextPrefix(raw.slice(0, this.working.coveredCount)) !== this.working.prefixHash)) {
       throw new Error('Context checkpoint does not match original history');
     }
+    if (this.working) assertToolBoundary(raw, this.working.coveredCount);
     const original = this.view(system, raw);
     if (!this.settings.enabled || contextSize(original, tools) <= this.maxChars * this.settings.threshold) return original;
     const cleaned = this.prune(original);

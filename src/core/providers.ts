@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { withTimeout } from './async.js';
-import { ProviderError } from './errors.js';
+import { ProviderError, TimeoutError } from './errors.js';
+import { httpProviderError } from './provider-error.js';
 import { fromWireMessage, isRecord, toWireMessage, validateModelResponse,
   type Message, type ModelResponse, type Provider, type ToolSchema } from './models.js';
 import { MEMORY_FLUSH_TASK, SUMMARY_SECTIONS, SUMMARY_TASK } from './context-engine.js';
@@ -67,10 +68,10 @@ export class OpenAICompatibleProvider implements Provider {
           headers: { 'Content-Type': 'application/json', ...(this.options.apiKey ? { Authorization: `Bearer ${this.options.apiKey}` } : {}) },
           body: JSON.stringify(this.buildRequestBody(messages, tools)),
         });
-        if (!response.ok) { await response.body?.cancel(); throw new ProviderError(`Model HTTP ${response.status}`); }
+        if (!response.ok) throw await httpProviderError(response, 'Model', requestSignal);
         const chunks: Uint8Array[] = [];
         let size = 0;
-        if (!response.body) throw new ProviderError('Empty model response');
+        if (!response.body) throw new ProviderError('Empty model response', 'empty');
         const reader = response.body.getReader();
         try {
           while (true) {
@@ -88,7 +89,8 @@ export class OpenAICompatibleProvider implements Provider {
       if (signal?.aborted) throw signal.reason;
       if (error instanceof ProviderError) throw error;
       // 错误正文或 URL 可能包含提示词和凭证，因此只报告错误类别。
-      throw new ProviderError(`Invalid/unavailable model response (${error instanceof Error ? error.name : 'Error'})`);
+      throw new ProviderError(`Invalid/unavailable model response (${error instanceof Error ? error.name : 'Error'})`,
+        error instanceof TimeoutError ? 'timeout' : error instanceof SyntaxError ? 'invalid' : 'network');
     }
   }
 
@@ -98,9 +100,11 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   protected parseResponse(data: unknown): ModelResponse {
-    if (!isRecord(data) || !Array.isArray(data.choices) || !isRecord(data.choices[0])) throw new ProviderError('Invalid model envelope');
+    if (!isRecord(data) || !Array.isArray(data.choices) || !isRecord(data.choices[0])) throw new ProviderError('Invalid model envelope', 'invalid');
     const choice = data.choices[0];
-    if (choice.finish_reason === 'length' || choice.finish_reason === 'content_filter') throw new ProviderError('Model did not complete its response');
+    if (choice.finish_reason === 'length' || choice.finish_reason === 'content_filter') {
+      throw new ProviderError('Model did not complete its response', choice.finish_reason === 'length' ? 'truncated' : 'invalid');
+    }
     const message = fromWireMessage(choice.message);
     if (message.role !== 'assistant') throw new ProviderError('Unexpected model role');
     const result: ModelResponse = { content: message.content,

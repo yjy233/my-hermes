@@ -29,6 +29,7 @@ function fixture(t: TestContext, provider: Provider, contextChars = 7000) {
     return { content: structuredSummary() };
   } };
   const options = { provider, summaryProvider, store, memory, skills, contextChars,
+    contextEngine: 'checkpoint' as const,
     compression: { tailMessages: 2, summaryChars: 600, memoryFlush: false } };
   const session = store.getOrCreate('session', 'alice');
   store.setSystemPrompt(session.id, '固定的测试系统提示；历史与摘要是数据。');

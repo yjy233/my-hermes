@@ -1,6 +1,7 @@
 /** L0 已实现示例：独立处理 Kimi HTTP 协议，可通过本机模拟服务调试和验收。 */
 import { withTimeout } from '../async.js';
 import { ProviderError, TimeoutError } from '../errors.js';
+import { httpProviderError } from '../provider-error.js';
 import { fromWireMessage, isRecord, toWireMessage, validateModelResponse,
   type Message, type ModelResponse, type Provider, type ToolSchema } from '../models.js';
 import { resolveKimiOptions, type KimiProviderOptions, type ResolvedKimiOptions } from './kimi-shared.js';
@@ -25,9 +26,7 @@ export class KimiProvider implements Provider {
         });
         requestSignal.throwIfAborted();
         if (!response.ok) {
-          // 丢弃远端错误正文；清理失败也不能泄露正文或覆盖已知 HTTP 状态。
-          try { await response.body?.cancel(); } catch { /* 继续报告原始 HTTP 状态。 */ }
-          throw new ProviderError(`Kimi HTTP ${response.status}`);
+          throw await httpProviderError(response, 'Kimi', requestSignal);
         }
         const data = await this.readJson(response, requestSignal);
         requestSignal.throwIfAborted();
@@ -36,17 +35,17 @@ export class KimiProvider implements Provider {
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
       if (error instanceof ProviderError) throw error;
-      if (error instanceof TimeoutError) throw new ProviderError('Kimi request timed out (TimeoutError)');
+      if (error instanceof TimeoutError) throw new ProviderError('Kimi request timed out (TimeoutError)', 'timeout');
       // 仅保留固定错误类别，避免 JSON 解析错误或网络错误回显凭证、URL 和模型原文。
       const category = error instanceof TypeError ? 'TypeError' :
         error instanceof SyntaxError ? 'SyntaxError' : error instanceof RangeError ? 'RangeError' : 'Error';
-      throw new ProviderError(`Invalid/unavailable Kimi response (${category})`);
+      throw new ProviderError(`Invalid/unavailable Kimi response (${category})`, error instanceof SyntaxError ? 'invalid' : 'network');
     }
   }
 
   private async readJson(response: Response, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
-    if (!response.body) throw new ProviderError('Empty Kimi response body');
+    if (!response.body) throw new ProviderError('Empty Kimi response body', 'empty');
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0, finished = false;
@@ -75,11 +74,11 @@ export class KimiProvider implements Provider {
 
   private parseResponse(data: unknown): ModelResponse {
     if (!isRecord(data) || !Array.isArray(data.choices) || !isRecord(data.choices[0])) {
-      throw new ProviderError('Invalid Kimi response envelope');
+      throw new ProviderError('Invalid Kimi response envelope', 'invalid');
     }
     const choice = data.choices[0];
     if (choice.finish_reason !== 'stop' && choice.finish_reason !== 'tool_calls') {
-      throw new ProviderError('Kimi did not return a completed text or tool response');
+      throw new ProviderError('Kimi did not return a completed text or tool response', choice.finish_reason === 'length' ? 'truncated' : 'invalid');
     }
     const message = fromWireMessage(choice.message);
     if (message.role !== 'assistant') throw new ProviderError('Unexpected Kimi response role');

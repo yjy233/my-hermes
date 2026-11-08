@@ -36,21 +36,11 @@ npm run dev -- chat --provider demo --mode reference --message '/calc (2+3)*4' -
   "turnTimeoutMs": 120000,
   "providerTimeoutMs": 30000,
   "autoReflect": false,
-  "compressionEnabled": true,
-  "compressionThreshold": 0.75,
-  "compressionTargetRatio": 0.5,
-  "compressionSummaryChars": 3000,
-  "compressionTailMessages": 8,
-  "compressionToolChars": 1200,
-  "compressionTimeoutMs": 20000,
-  "compressionMemoryFlush": true,
   "plugins": []
 }
 ```
 
 命令行覆盖配置。mode 控制 Core 算法，providerMode 独立选择 Kimi 的已完成主实现 learner 或对照版 reference；provider 可为 demo、compatible 或 kimi。providerTimeoutMs 控制每次模型请求，turnTimeoutMs 控制整个回合。Kimi 示例配置使用 60000 ms 请求超时、180000 ms 回合超时与 64000 字符上下文，见 [kimi.json](../examples/config/kimi.json)。已有配置不会被初始化覆盖。
-
-默认开启高级压缩，可用 `--compression advanced/basic` 显式选择；basic 对应 `compressionEnabled: false`。高级引擎会在每次模型请求前运行，含工具循环内请求；摘要与压缩前长期记忆整理会增加模型调用。`compressionThreshold` 是字符预算触发比例，`compressionTargetRatio` 必须小于它；其余字段与失败策略见 [高级上下文压缩](08-context-compression.md)。程序接入可注入独立 summaryProvider，CLI 复用主 Provider。
 
 修改配置后重启入口；已有会话仍保留提示快照，新会话读取最新记忆和 Skill 索引。插件配置路径相对 profile，--plugin 相对当前目录。API key 放本地 `.env` 或 shell 环境，不放 JSON。
 
@@ -98,13 +88,12 @@ node --inspect-brk --import tsx src/cli.ts chat --provider demo --message '/calc
 | --- | --- |
 | `src/core/providers/kimi.ts` 的 `complete` | L0 请求、工具与推理字段、响应、错误和取消 |
 | `src/learning/exercises.ts` 的 `runLoop`（已实现） | 中文注释、context/delta、文本与工具共存、推理字段、父级取消 |
-| `src/learning/exercises.ts` 的 `compactHistory`（已实现） | system 预算、完整 user 轮次、连续保留最近历史、超预算错误 |
-| `src/learning/exercises.ts` 的 `selectMemories`（已实现） | scope 内候选、唯一词项、同分保持顺序、条数限制 |
-| `src/core/context-engine.ts` 的 `prepare` / `summarize` | 含 schema 的预算、工具组边界、增量摘要、失败与取消 |
+| `src/learning/exercises.ts` 的 `compactHistory`（已实现） | 软阈值、工具清理、分区、异步摘要与失败选择 |
+| `src/core/compression/compressor.ts` / `provider.ts` | 辅助模型回退、失败冷却、无进展退避和溢出恢复 |
+| `src/core/memory-flush.ts` / `LongTermMemory.manage` | 记忆专用请求、容量错误重试、批次最终容量与冻结快照 |
 | `src/core/tools.ts` 的 `ToolRegistry.execute` | schema、限时、错误 envelope、AbortSignal |
 | `src/core/agent.ts` | 提示快照、预算、完整轮次持久化 |
-| `src/memory/store.ts` 的 `commitTurn` | assistant/tool ID、检查点覆盖数、前缀指纹和代际原子提交 |
-| `src/memory/long-term.ts` 的批次更新 | add/patch/remove 定位、最终容量和整批失败不落盘 |
+| `src/memory/store.ts` 的 `appendMessages` | assistant/tool ID 往返 |
 | `src/gateway/router.ts` 的 `Gateway.handle` | 授权、队列、去重、取消 |
 | `src/evolution/manager.ts` 的 `approve` | 候选状态与写入 Skill |
 
@@ -147,11 +136,13 @@ npm run check -- --all --mode reference
 npm run build
 ```
 
-完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。当前 L0～L3 已完成，L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`。阶段 2 包含基础 L2/L3 和高级压缩的 11 个具名 case，本轮 learner 验收已通过 11/11，可独立用 `check --stage 2 --mode learner --trace --debug` 阅读与调试；完整 learner 聊天仍需 L4，下一步独立实现阶段 3 的会话路由。阶段 4 只是扩展基线，不能自动验证任意自定义插件。
+本次合并已通过 `npm run verify`：类型检查、255/255 项测试、reference 六阶段验收和构建全部成功，其中阶段 2 为 20/20。本次仅使用离线和本机协议测试，未调用真实 Kimi 服务。
 
-基础模式 L2 按序列化字符预算裁剪完整轮次，进入 runLoop 前执行一次；高级模式在每次请求前运行异步 ContextEngine，清理旧工具输出并生成结构化摘要。两种模式都不删除 SQLite 原始记录，也不提供真实 token 计量。高级摘要失败时保留原上下文，原请求超过硬预算则明确失败，不静默丢历史；取消不提交新检查点。L3 只对 scope 内候选做稳定词项排序。调试时分别观察原始历史、模型请求视图、持久摘要和长期文件。
+完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。当前 L0～L3 已完成，L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`。阶段 1 可独立用 `check --stage 1 --mode learner --trace` 阅读与调试；完整 learner 聊天仍需 L4，阶段 2 可验收 L2/L3，下一步实现阶段 3 的 L4。阶段 4 只是扩展基线，不能自动验证任意自定义插件。
 
-本轮 `npm run verify` 已通过类型检查、199 项测试、reference 全阶段验收和构建，未使用真实凭证调用在线 Kimi。`npm test` 验证基础设施、参考实现和已实现学习算法的回归；learner 阶段检查独立调用学习者代码，两项分别验收。根据具体任务补充边界案例，不以默认测试通过代替练习完成。中断/超时能传播取消，不能回滚已发生的副作用，忽略 signal 的代码还可能继续；重试前检查实际结果。
+`npm test` 验证基础设施、参考实现和已实现学习算法的回归；learner 检查直接调用学习者代码，两项分别验收。根据具体任务补充边界案例，不以默认测试通过代替练习完成。中断/超时能传播取消，不能回滚已发生的副作用，忽略 signal 的代码还可能继续；重试前检查实际结果。
+
+默认压缩链路为异步 L2。可用 `--compression basic` 对照整轮裁剪，用 `--compression advanced --trace` 观察 `context.compression.*`、`context.summary.*` 与 `memory.flush.*`。断点先看 `exercises.ts` 的 `compactHistory`，再进入 `core/compression`；程序显式选择 `AgentOptions.contextEngine: 'checkpoint'` 时才使用另一个 `ContextEngine` 库实现，两者不叠加。
 
 | 现象 | 首先检查 |
 | --- | --- |
@@ -161,9 +152,7 @@ npm run build
 | 工具第二轮丢上下文 | reasoningContent 与 toolCalls 是否完整保存、持久化并转换回 wire 字段 |
 | 单阶段 failed | 查 case 名和错误，使用同一 stage 的 --trace --debug；不必先补其他阶段 |
 | --all 同时有 passed/failed | 全部阶段独立汇总；任一 failed 仍以非零退出 |
-| ContextBudgetExceeded | system、当前用户、受保护工具组和 schema 是否已超过硬预算；摘要是否失败，使用 compression basic 还是 advanced |
-| 摘要生成后重启又读取旧内容 | 本轮是否成功提交；检查 coveredCount、prefixHash 与 generation，失败轮次不更新检查点 |
-| 长期记忆已满 | 在同一 memory operations 批次中合并或移除过时条目再新增，不能忽略容量错误 |
+| ContextBudgetExceeded | system、最新完整轮、工具 schema 总预算 |
 | 工具 ok=false | error/message、参数和目标，不能当成成功事实 |
 | 同 eventId 冲突 | 是否把旧 ID 用在新正文上 |
 | 旧会话记忆未变 | 快照是设计行为，用读取工具检查即时值或 /new |

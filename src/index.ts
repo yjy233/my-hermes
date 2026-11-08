@@ -1,5 +1,5 @@
 export { Agent, BudgetProvider, validateTurn, type AgentOptions } from './core/agent.js';
-export { ContextEngine, contextSize, DEFAULT_COMPRESSION, resolveCompressionOptions,
+export { ContextEngine, contextSize, DEFAULT_COMPRESSION as DEFAULT_CHECKPOINT_COMPRESSION, resolveCompressionOptions,
   type CompressionOptions } from './core/context-engine.js';
 export * from './core/models.js';
 export * from './core/errors.js';
@@ -18,3 +18,6 @@ export { loadAlgorithms, type Algorithms, type Mode } from './learning/index.js'
 export { loadSettings, initializeProfile, type Settings } from './config.js';
 export { ProfileLock } from './profile-lock.js';
 export { loadEnvironmentFile, type EnvironmentFileResult } from './environment.js';
+export { ContextCompressor, type CompressorOptions, type CompressionResult } from './core/compression/compressor.js';
+export { compressionSettings, DEFAULT_COMPRESSION, type CompressionSettings, type CompressionState } from './core/compression/settings.js';
+export type { CompactHistory, CompressionRuntime } from './core/compression/types.js';

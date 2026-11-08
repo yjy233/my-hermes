@@ -2,7 +2,7 @@
 
 本项目以 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 为主要学习参考，使用 TypeScript 与 Node.js 24+ 独立实现教学框架，不宣称与 Hermes 的配置、插件或运行时协议兼容。OpenClaw 只作为同类产品背景，本轮没有移植其实现。
 
-实现演进：本文保留最初的参考研究与教学起点说明。同步 L2 的整轮裁剪现作为 basic 模式保留；当前默认 advanced 模式已增加工具输出清理、异步结构化摘要、持久检查点与压缩前长期记忆整理，设计和边界见 [高级上下文压缩](08-context-compression.md)。
+实现演进：本文保留最初的参考研究与教学起点说明。早期 L2 的整轮裁剪现由 `trimHistory` 作为 basic 模式保留；当前默认 advanced 模式的 L2 已升级为异步语义压缩，包含工具输出清理、结构化摘要、回退与冷却、持久工作上下文和压缩前长期记忆整理，设计和边界见 [上下文压缩](08-context-compression.md)。
 
 研究日期：2026-10-25。GitHub API 查询到的参考提交为 [`4ea8d23cc9f527332ccb1d55359b27741b6ea51b`](https://github.com/NousResearch/hermes-agent/commit/4ea8d23cc9f527332ccb1d55359b27741b6ea51b)，提交时间 `2026-10-25T02:56:21Z`。以下源码链接固定到该提交；在线文档可能继续更新，分析结论以本次阅读为准。
 
@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | Core | `AIAgent`；`run_agent.py` 是入口 facade，循环拆在 `agent/conversation_loop.py` 与 `agent/turn_*.py` | 单一 Agent 运行同一套 provider → tool → history 循环；入口不包含推理逻辑。省去上游多协议适配、模型切换、流式输出与子代理预算树。 |
 | Gateway | 长驻 `GatewayRunner`，归一化消息、鉴权、会话路由、忙碌控制与发送 | 保留独立 Gateway、会话锁、授权和事件去重；连接器先提供 CLI / JSONL / 本地 HTTP。没有声称支持 Telegram、飞书等生产平台。 |
-| 短期上下文 | 工具结果清理、边界对齐、中段摘要、保留最近消息，避免拆散 tool call/result | 教学起点按完整 user turn 移除较老上下文，保留当前轮与工具组；这是确定性的裁剪，不是 Hermes 的语义摘要。SQLite 原始记录仍可检索。 |
+| 短期上下文 | 工具结果清理、边界对齐、中段摘要、保留最近消息，避免拆散 tool call/result | L2 已独立实现异步语义压缩主流程；共享运行环境提供辅助模型回退、冷却和 checkpoint 恢复。沿用字符预算，关闭后使用辅助函数 `trimHistory`。SQLite 原始记录仍可检索。 |
 | 长期记忆 | 有界、人工可读 `MEMORY.md` / `USER.md`，会话起始冻结快照 | 保留两类文件、容量检查、持久写入和会话快照；按用户 scope 隔离。教学默认每文件 4,000 字符，是明确的简化，并未复制上游不同配额。 |
 | 历史检索 | SQLite 持久会话、全文检索与压缩相关元数据 | 本地 SQLite 存消息和工具调用，按 scope 搜索；不声称实现上游 FTS5 多索引、压缩代际与会话迁移全部语义。 |
 | Skills | 索引 → `SKILL.md` → 参考文件的渐进披露 | 索引只注入名称/描述，正文按需读；保留目录形式，限制读路径。不支持上游技能市场、完整元数据规范与安装流程。 |
@@ -27,7 +27,7 @@
 
 Hermes 文档中的 `MEMORY.md` 上限为 2,200 字符，`USER.md` 为 1,375 字符；超限返回错误，由 Agent 整理后重试，不静默丢条目。会话开始时读成冻结快照，当前会话内的写入立即落盘，但只在下一次会话的系统提示中体现；工具响应可以查看实时内容。本项目保留这些行为原则，但容量和按用户 scope 隔离是教学版自己的配置。见 [Persistent Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) 与 [固定版本说明](https://github.com/NousResearch/hermes-agent/blob/4ea8d23cc9f527332ccb1d55359b27741b6ea51b/website/docs/user-guide/features/memory.md)。
 
-Hermes 的上下文压缩通常包含清理旧工具输出、保护头尾、为中段生成结构化摘要、修复工具配对。教学版从整轮裁剪起步，目的是先学会预算和结构不变量；被裁掉的信息不会自动得到摘要。后续可把预算策略替换为摘要器，并增加压缩失败、摘要质量和重复压缩评测。见 [Context Compression and Caching](https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching) 与 [固定版本说明](https://github.com/NousResearch/hermes-agent/blob/4ea8d23cc9f527332ccb1d55359b27741b6ea51b/website/docs/developer-guide/context-compression-and-caching.md)。
+2026-11-05 的压缩实现另参考了本地 Hermes 提交 `29a61cb7ab509cda0c376bf3860edb87210b0755`：旧工具清理、保护头尾、结构化中段摘要、工具配对修复、异常回退与冷却。算法和 prompt 以 TypeScript 独立撰写。具体行为、验证以及与上游 token usage、多模态和后台机制的差异见 [上下文压缩](08-context-compression.md)。上表其他模块仍沿用本页开头记录的参考版本。
 
 上游会话层还负责 WAL、FTS5、活动/归档消息以及压缩相关状态。教学版没有把这些高级恢复能力包装成已完成。见 [Session Storage](https://hermes-agent.nousresearch.com/docs/developer-guide/session-storage) 与 [固定版本说明](https://github.com/NousResearch/hermes-agent/blob/4ea8d23cc9f527332ccb1d55359b27741b6ea51b/website/docs/developer-guide/session-storage.md)。
 

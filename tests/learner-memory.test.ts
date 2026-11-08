@@ -1,4 +1,4 @@
-/** 直接验证已完成的 L2/L3，并用真实 SQLite 和 Markdown 记忆串起 learner Agent。 */
+/** 验证基础裁剪辅助策略与 L3，再用真实 SQLite 和 Markdown 记忆串起 learner Agent。 */
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,8 @@ import { Agent } from '../src/core/agent.js';
 import { ContextBudgetExceeded } from '../src/core/errors.js';
 import { messageSize, type Message, type Provider, type ToolSchema } from '../src/core/models.js';
 import { DemoProvider } from '../src/core/providers.js';
-import { compactHistory, selectMemories } from '../src/learning/exercises.js';
+import { selectMemories } from '../src/learning/exercises.js';
+import { trimHistory as compactHistory } from '../src/core/compression/trim.js';
 import { LongTermMemory, SessionStore, type MemoryHit } from '../src/memory/index.js';
 import { SkillCatalog } from '../src/skills/index.js';
 
@@ -114,11 +115,13 @@ test('L3 空查询或只有分隔符时保持候选原有的最近顺序，并�
     { sessionId: 'oldest', content: '最早记录', score: 1 },
   ];
   const original = structuredClone(hits);
-  for (const query of ['', '   ', '--- !!!']) {
+  for (const query of ['--- !!!']) {
     const selected = selectMemories(query, hits, 2);
     assert.deepEqual(selected, original.slice(0, 2));
     assert.notEqual(selected, hits);
   }
+  assert.deepEqual(selectMemories('', hits, 2), []);
+  assert.deepEqual(selectMemories('   ', hits, 2), []);
   assert.deepEqual(hits, original);
 });
 

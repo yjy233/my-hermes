@@ -10,6 +10,17 @@ import { hashContextPrefix, type ContextCheckpoint } from '../src/memory/store.j
 const BUDGET = 6000;
 const OPTIONS: CompressionOptions = { summaryChars: 700, tailMessages: 4, memoryFlush: false };
 
+test('恢复检查点即使指纹正确，也拒绝把工具声明和结果切开的覆盖边界', async () => {
+  const { provider } = scripted();
+  const raw: Message[] = [{ role: 'user', content: '计算' }, ...recentTools(),
+    { role: 'assistant', content: '完成' }];
+  const checkpoint: ContextCheckpoint = { sessionId: 'test', generation: 1, coveredCount: 2,
+    prefixHash: hashContextPrefix(raw.slice(0, 2)), summary: summary(), updatedAt: '2026-11-08' };
+  const engine = new ContextEngine(provider, BUDGET, OPTIONS, { checkpoint });
+  await assert.rejects(() => engine.prepare([{ role: 'system', content: '固定规则' }, ...raw], []));
+  assert.equal(engine.checkpointDraft(), undefined);
+});
+
 function summary(marker = '已完成旧任务'): string {
   return SUMMARY_SECTIONS.map(section => `## ${section}\n${marker}`).join('\n\n');
 }

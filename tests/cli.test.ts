@@ -106,9 +106,9 @@ test('CLI honors configured learner mode and explicit override without falling b
   config.provider = 'compatible';
   config.baseUrl = 'http://127.0.0.1:1/v1';
   writeFileSync(configPath, JSON.stringify(config));
-  const stage = invoke(['check', '--stage', '3', '--mode', 'learner']);
-  assert.notEqual(stage.status, 0);
-  assert.match(stage.stderr, /L4/u);
+  const stage = invoke(['check', '--stage', '2', '--mode', 'learner']);
+  assert.equal(stage.status, 0, stage.stderr);
+  assert.equal(JSON.parse(stage.stdout).mode, 'learner');
   const chat = invoke(['chat', '--message', 'hello']);
   assert.notEqual(chat.status, 0);
   assert.match(chat.stderr, /ExerciseNotImplemented/u);

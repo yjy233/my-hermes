@@ -1,159 +1,130 @@
-/** 高级上下文与长期记忆验收；所有模型响应由本机脚本提供，不读取真实凭证。 */
+/** L2 验收直接选择被测算法，模型只用本机内存 stub，不依赖 L1/L3 或真实凭证。 */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { ContextEngine, contextSize, SUMMARY_SECTIONS } from '../core/context-engine.js';
-import { ContextBudgetExceeded } from '../core/errors.js';
-import type { Emit, Message, Provider, ToolSchema } from '../core/models.js';
-import { hashContextPrefix, LongTermMemory, MemoryOperationError, SessionStore } from '../memory/index.js';
+import { ContextCompressor, type CompressorOptions } from '../core/compression/compressor.js';
+import type { CompactHistory } from '../core/compression/types.js';
+import { initialCompressionState } from '../core/compression/settings.js';
+import { summaryMessage, withoutSummaries } from '../core/compression/text.js';
+import { ProviderError } from '../core/errors.js';
+import { requestSize, type Emit, type Message, type Provider } from '../core/models.js';
 import type { StageCase } from './contracts.js';
 
-const BUDGET = 8000;
-const options = { tailMessages: 2, memoryFlush: false };
-const tools: ToolSchema[] = [{ type: 'function', function: {
-  name: 'calculator', description: '离线验收计算工具', parameters: {
-    type: 'object', properties: { expression: { type: 'string' } }, required: ['expression'],
-  },
-} }];
+const summary = '## Outstanding request\nVerify the current task.\n## Completed actions\nRead src/example.ts.\n## Constraints and preferences\nKeep the original history.';
+const summarizer: Provider = { async complete() { return { content: summary }; } };
 
-function longContext(): Message[] {
-  const history: Message[] = [{ role: 'system', content: '固定的系统提示，不随摘要改变。' }];
-  for (let index = 0; index < 10; index++) {
-    history.push({ role: 'user', content: `第 ${index} 个历史问题` },
-      { role: 'assistant', content: `history_marker_${index} ` + '历史中的实验结果和学习记录。'.repeat(90) });
-  }
-  history.push({ role: 'user', content: '保留当前问题：请计算 2+3。' },
-    { role: 'assistant', content: '先使用计算工具。', reasoningContent: 'latest-tool-protocol-metadata',
-      toolCalls: [{ id: 'latest-call', name: 'calculator', arguments: { expression: '2+3' } }] },
-    { role: 'tool', content: '{"ok":true,"result":5}', toolCallId: 'latest-call' });
-  return history;
+function history(): Message[] {
+  return [{ role: 'system', content: 'Fixed identity.' }, ...Array.from({ length: 18 }, (_, index): Message[] => [
+    { role: 'user', content: `Question ${index}: ` + 'detail '.repeat(40) },
+    { role: 'assistant', content: `Evidence ${index}: ` + 'observation '.repeat(80) },
+  ]).flat(), { role: 'user', content: 'Stop the previous task. Only verify the result.' }];
+}
+function round(id: string, size = 1800): Message[] {
+  return [{ role: 'assistant', content: '', reasoningContent: `reasoning-${id}`,
+    toolCalls: [{ id, name: 'read_file', arguments: { path: 'src/example.ts' } }] },
+  { role: 'tool', toolCallId: id, content: JSON.stringify({ ok: true, result: 'x'.repeat(size) }) }];
 }
 
-function structuredSummary(): string {
-  return SUMMARY_SECTIONS.map(section => `## ${section}\n离线记录：保留任务信息，不编造事实。`).join('\n\n');
-}
-
-function summarizer(onCall: () => void = () => undefined): Provider {
-  return { async complete(messages, schemas, signal) {
-    signal?.throwIfAborted();
-    onCall();
-    assert.deepEqual(schemas, [], '摘要模型不能调用业务工具');
-    assert.ok(contextSize(messages, schemas) <= BUDGET, '摘要请求自身也必须满足预算');
-    return { content: structuredSummary() };
-  } };
-}
-
-function assertToolPairs(messages: Message[]): void {
-  const pending = new Set<string>();
-  for (const message of messages) {
-    if (message.role === 'tool') {
-      assert.ok(message.toolCallId && pending.delete(message.toolCallId), '工具结果必须匹配已保留的声明');
-    } else {
-      assert.equal(pending.size, 0, '进入下一条非工具消息前必须收齐当前组结果');
-      for (const call of message.toolCalls ?? []) pending.add(call.id);
-    }
-  }
-  assert.equal(pending.size, 0, '压缩视图不能保留未完成工具组');
-}
-
-async function temporary(run: (root: string) => void | Promise<void>): Promise<void> {
-  const root = mkdtempSync(join(tmpdir(), 'hermes-compression-check-'));
-  try { await run(root); } finally { rmSync(root, { recursive: true, force: true }); }
-}
-
-export function compressionCases(emit: Emit): StageCase[] {
-  return [{
-    name: 'Context/structured-summary-and-tool-pairs',
-    async run(signal) {
-      const input = longContext(), original = structuredClone(input);
-      let summaries = 0, actual: Message[] = [];
-      const main: Provider = { async complete(messages, schemas, modelSignal) {
-        modelSignal?.throwIfAborted();
-        actual = structuredClone(messages);
-        assert.deepEqual(schemas, tools);
-        return { content: '5' };
+export function compressionCases(algorithm: CompactHistory, emit: Emit): StageCase[] {
+  const make = (options: Partial<CompressorOptions> = {}) => new ContextCompressor({
+    provider: summarizer, maxChars: 24_000, settings: { protectLast: 4, summaryChars: 2000 }, ...options, algorithm, emit,
+  });
+  return [
+    { name: 'L2/threshold-and-disabled-no-model', async run(signal) {
+      let calls = 0;
+      const provider: Provider = { async complete() { calls++; return { content: summary }; } };
+      const messages: Message[] = [{ role: 'system', content: 'fixed' }, { role: 'user', content: 'hello' }];
+      const normal = await make({ provider }).compress(messages, [], signal);
+      assert.equal(normal.changed, false); assert.deepEqual(normal.messages, messages);
+      assert.equal((await make({ provider, settings: { enabled: false } }).compress(history(), [], signal, true)).changed, false);
+      assert.equal(calls, 0);
+    } },
+    { name: 'L2/structured-summary-prompt-and-immutability', async run(signal) {
+      const messages = history(), original = structuredClone(messages), observed: Message[][] = [];
+      const provider: Provider = { async complete(prompt, tools) {
+        assert.deepEqual(tools, []); observed.push(structuredClone(prompt));
+        return { content: summary };
       } };
-      const engine = new ContextEngine(main, BUDGET, options,
-        { summaryProvider: summarizer(() => summaries++), emit });
-      const answer = await engine.complete(input, tools, signal);
-      assert.equal(answer.content, '5');
-      assert.ok(summaries > 0, '较长历史必须实际请求摘要，不能只丢弃旧消息');
-      assert.ok(contextSize(actual, tools) <= BUDGET);
-      assert.deepEqual(actual[0], original[0], '冻结 system 不被改写');
-      assert.ok(actual.some(message => message.content.includes('## 关键决策')));
-      assert.deepEqual(actual.slice(-2), original.slice(-2), '最新工具声明、推理字段和结果完整保留');
-      assert.ok(actual.some(message => message.content === original.at(-3)!.content), '当前真实 user 必须保留');
-      assertToolPairs(actual);
-      assert.ok(engine.checkpointDraft()?.coveredCount);
-      assert.deepEqual(input, original, '摘要不能修改循环持有的原始历史');
-    },
-  }, {
-    name: 'Context/failure-keeps-original',
-    async run(signal) {
-      const input = longContext(), original = structuredClone(input);
-      const invalid: Provider = { async complete() { return { content: '缺少规定标题的无效摘要' }; } };
-      const engine = new ContextEngine(invalid, BUDGET, options, { summaryProvider: invalid, emit });
-      assert.ok(contextSize(input, tools) > BUDGET, '场景必须确实超过硬预算');
-      await assert.rejects(() => engine.prepare(input, tools, signal), ContextBudgetExceeded);
-      assert.equal(engine.checkpointDraft(), undefined, '失败摘要不能产生待提交检查点');
-      assert.deepEqual(input, original, '摘要失败也不能清空或改写原始消息');
-    },
-  }, {
-    name: 'Context/checkpoint-restart',
-    run: signal => temporary(async root => {
-      const path = join(root, 'sessions.db'), input = longContext();
-      // prepare 模拟工具结果返回后的请求；提交时再补上成功的最终 assistant 答复。
-      const raw: Message[] = [...input.slice(1), { role: 'assistant', content: '5' }];
-      const store = new SessionStore(path);
-      let summaries = 0;
-      const provider = summarizer(() => summaries++);
-      let sessionId: string;
-      try {
-        const session = store.getOrCreate('compression-session', 'alice');
-        sessionId = session.id;
-        const engine = new ContextEngine(provider, BUDGET, options, { summaryProvider: provider, emit });
-        await engine.prepare(input, tools, signal);
-        const checkpoint = engine.checkpointDraft();
-        assert.ok(checkpoint, '先产生摘要，再验证持久化恢复');
-        store.commitTurn(session.id, raw, checkpoint);
-        assert.equal(store.search('history_marker_0', 'alice').length, 1, '原始历史仍然可检索');
-      } finally { store.close(); }
-      const reopened = new SessionStore(path);
-      try {
-        const checkpoint = reopened.loadCheckpoint(sessionId)!;
-        assert.ok(checkpoint);
-        assert.equal(checkpoint.prefixHash, hashContextPrefix(raw.slice(0, checkpoint.coveredCount)));
-        assert.deepEqual(reopened.loadMessages(sessionId), raw);
-        const before = summaries;
-        const engine = new ContextEngine(provider, BUDGET, options, { checkpoint, summaryProvider: provider, emit });
-        const restored = await engine.prepare([input[0], ...reopened.loadMessages(sessionId)], tools, signal);
-        assert.ok(contextSize(restored, tools) <= BUDGET);
-        assert.equal(summaries, before, '重启后相同历史复用有效摘要，不重复请求模型');
-        assert.equal(engine.checkpointDraft(), undefined, '复用不会伪造新代际');
-        assertToolPairs(restored);
-      } finally { reopened.close(); }
-    }),
-  }, {
-    name: 'Memory/atomic-curation-and-scope',
-    run: signal => temporary(root => {
-      signal?.throwIfAborted();
-      const memory = new LongTermMemory(join(root, 'memory'), 64);
-      memory.manage('alice', 'memory', [{ action: 'add', content: 'old fact '.repeat(6).trim() }]);
-      const original = memory.read('alice', 'MEMORY.md');
-      assert.throws(() => memory.manage('alice', 'memory', [
-        { action: 'add', content: 'new fact requires more capacity' },
-      ]), MemoryOperationError);
-      assert.equal(memory.read('alice', 'MEMORY.md'), original, '超容量不允许部分落盘');
-      const result = memory.manage('alice', 'memory', [
-        // 整批按最终容量校验：即使 add 暂时超限，也可在后续 remove 腾出空间。
-        { action: 'add', content: 'Project uses TypeScript.' },
-        { action: 'remove', old_text: original },
-      ]);
-      assert.deepEqual(result.entries, ['Project uses TypeScript.']);
-      assert.ok(result.usage.chars <= result.usage.limit);
-      assert.equal(memory.read('bob', 'MEMORY.md'), '', '同文件名不能突破 scope 隔离');
-      assert.equal(memory.read('alice', 'USER.md'), '', 'memory 与 user 两个目标保持独立');
-    }),
-  }];
+      const result = await make({ provider }).compress(messages, [], signal);
+      assert.equal(result.method, 'summary'); assert.equal(observed.length, 1);
+      assert.ok(requestSize(observed[0], []) <= 24_000);
+      const source = JSON.parse(observed[0][1].content);
+      assert.ok(source.transcript); assert.equal(source.focus, messages.at(-1)!.content);
+      assert.deepEqual(result.messages[0], messages[0]);
+      assert.deepEqual(withoutSummaries(result.messages).at(-1), messages.at(-1));
+      assert.ok(result.messages.some(row => row.contextSummary));
+      assert.ok(requestSize(result.messages, []) < requestSize(messages, []));
+      assert.deepEqual(messages, original);
+    } },
+    { name: 'L2/prune-tools-before-summary', async run(signal) {
+      let calls = 0;
+      const provider: Provider = { async complete() { calls++; return { content: summary }; } };
+      const messages: Message[] = [{ role: 'system', content: 'fixed' }, { role: 'user', content: 'initial' },
+        { role: 'assistant', content: 'started' }, ...round('old', 18_000), { role: 'assistant', content: 'read' },
+        { role: 'user', content: 'current' }, ...round('current')];
+      const result = await make({ provider, settings: { protectLast: 3 } }).compress(messages, [], signal);
+      assert.equal(result.method, 'prune'); assert.equal(calls, 0);
+      assert.equal(JSON.parse(result.messages.find(row => row.toolCallId === 'old')!.content).compressed, true);
+      assert.deepEqual(result.messages.slice(-2), messages.slice(-2));
+    } },
+    { name: 'L2/inflight-user-and-complete-tool-round', async run(signal) {
+      const messages: Message[] = [{ role: 'system', content: 'fixed' }, { role: 'user', content: 'Complete the task.' },
+        ...Array.from({ length: 10 }, (_, i) => round(String(i))).flat()];
+      const result = await make().compress(messages, [], signal);
+      assert.equal(result.method, 'summary');
+      assert.deepEqual(withoutSummaries(result.messages).find(row => row.role === 'user'), messages[1]);
+      assert.deepEqual(result.messages.slice(-2), messages.slice(-2));
+      const calls = result.messages.flatMap(row => row.toolCalls?.map(call => call.id) ?? []);
+      const results = result.messages.filter(row => row.role === 'tool').map(row => row.toolCallId);
+      assert.deepEqual(calls, results);
+    } },
+    { name: 'L2/update-previous-summary', async run(signal) {
+      const messages = history();
+      messages.splice(3, 0, summaryMessage('## Goal\nKeep the prior decision.\n[Reload skill: study-notes]'));
+      const provider: Provider = { async complete(prompt) {
+        assert.match(JSON.parse(prompt[1].content).previousCheckpoint, /Keep the prior decision/);
+        return { content: summary };
+      } };
+      const result = await make({ provider }).compress(messages, [], signal);
+      assert.equal(result.method, 'summary');
+      const rows = result.messages.filter(row => row.contextSummary);
+      assert.equal(rows.length, 1); assert.match(rows[0].content, /\[Reload skill: study-notes\]/);
+    } },
+    { name: 'L2/failure-preserves-history-and-cools-down', async run(signal) {
+      let calls = 0;
+      const provider: Provider = { async complete() { calls++; throw new ProviderError('denied', 'access'); } };
+      const messages = history(), compressor = make({ provider });
+      assert.deepEqual((await compressor.compress(messages, [], signal)).messages, messages);
+      assert.deepEqual((await compressor.compress(messages, [], signal)).messages, messages);
+      assert.equal(calls, 1); assert.equal(compressor.snapshot().lastFailure, 'access');
+      assert.ok(compressor.snapshot().cooldownUntil > Date.now());
+    } },
+    { name: 'L2/auxiliary-fallback-once', async run(signal) {
+      let auxiliaryCalls = 0, mainCalls = 0;
+      const summaryProvider: Provider = { async complete() { auxiliaryCalls++; throw new ProviderError('empty', 'empty'); } };
+      const provider: Provider = { async complete() { mainCalls++; return { content: summary }; } };
+      assert.equal((await make({ provider, summaryProvider }).compress(history(), [], signal)).method, 'summary');
+      assert.equal(auxiliaryCalls, 1); assert.equal(mainCalls, 1);
+    } },
+    { name: 'L2/cancel-does-not-create-fallback', async run(signal) {
+      const controller = new AbortController(), reason = new Error('cancel L2 summary');
+      const provider: Provider = { async complete() { controller.abort(reason); return { content: summary }; } };
+      const compressor = make({ provider });
+      const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      await assert.rejects(() => compressor.compress(history(), [], combined), error => error === reason);
+      assert.deepEqual(compressor.snapshot(), initialCompressionState());
+    } },
+    { name: 'L2/deterministic-fallback-and-strict-policy', async run(signal) {
+      const provider: Provider = { async complete() { throw new Error('summary unavailable'); } };
+      const messages = history();
+      assert.equal((await make({ provider }).compress(messages, [], signal)).method, 'fallback');
+      const strict = make({ provider, settings: { abortOnFailure: true } });
+      assert.deepEqual((await strict.compress(messages, [], signal)).messages, messages);
+    } },
+    { name: 'L2/protected-context-no-destructive-trim', async run(signal) {
+      let calls = 0;
+      const provider: Provider = { async complete() { calls++; return { content: summary }; } };
+      const messages: Message[] = [{ role: 'system', content: 'fixed' }, { role: 'user', content: 'x'.repeat(25_000) }];
+      const result = await make({ provider }).compress(messages, [], signal);
+      assert.equal(result.changed, false); assert.deepEqual(result.messages, messages); assert.equal(calls, 0);
+    } },
+  ];
 }

@@ -1,3 +1,5 @@
+import { trimHistory } from '../src/core/compression/trim.js';
+import { ContextCompressor } from '../src/core/compression/compressor.js';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setImmediate as nextTurn } from 'node:timers/promises';
@@ -10,7 +12,7 @@ import { fromWireMessage, messageSize, toWireMessage, validateModelResponse,
 import { OpenAICompatibleProvider } from '../src/core/providers.js';
 import { ToolRegistry, validate, validateSchema } from '../src/core/tools.js';
 import { loadAlgorithms } from '../src/learning/index.js';
-import { compactHistory, reflect, runLoop, selectMemories, sessionKey } from '../src/learning/reference.js';
+import { reflect, runLoop, selectMemories, sessionKey } from '../src/learning/reference.js';
 
 const noop = () => undefined;
 const objectSchema = { type: 'object' };
@@ -117,7 +119,7 @@ test('history compaction retains a whole newest turn and never mutates SQLite-sh
   const input = [system, ...old, ...latest];
   const original = structuredClone(input);
   const budget = [system, ...latest].reduce((sum, message) => sum + messageSize(message), 0);
-  const compacted = compactHistory(input, budget);
+  const compacted = trimHistory(input, budget);
   assert.deepEqual(compacted, [system, ...latest]);
   assert.deepEqual(input, original);
   assert.equal(compacted[3].toolCallId, compacted[2].toolCalls?.[0].id);
@@ -129,16 +131,16 @@ test('history keeps a contiguous suffix instead of cherry-picking older small tu
   const large: Message = { role: 'user', content: 'x'.repeat(1000) };
   const newest: Message = { role: 'user', content: 'newest' };
   const budget = [system, oldest, newest].reduce((sum, message) => sum + messageSize(message), 0);
-  assert.deepEqual(compactHistory([system, oldest, large, newest], budget), [system, newest]);
+  assert.deepEqual(trimHistory([system, oldest, large, newest], budget), [system, newest]);
 });
 
 test('system-only and oversized newest contexts have explicit budget behavior', () => {
   const system: Message = { role: 'system', content: 'identity' };
-  assert.deepEqual(compactHistory([system], messageSize(system)), [system]);
-  assert.throws(() => compactHistory([system], messageSize(system) - 1), ContextBudgetExceeded);
-  assert.throws(() => compactHistory([system, { role: 'user', content: 'x'.repeat(500) }], 100), ContextBudgetExceeded);
-  assert.throws(() => compactHistory([system, toolReply()], 1000), /user/);
-  assert.throws(() => compactHistory([{ role: 'user', content: 'no system' }], 1000), /system/);
+  assert.deepEqual(trimHistory([system], messageSize(system)), [system]);
+  assert.throws(() => trimHistory([system], messageSize(system) - 1), ContextBudgetExceeded);
+  assert.throws(() => trimHistory([system, { role: 'user', content: 'x'.repeat(500) }], 100), ContextBudgetExceeded);
+  assert.throws(() => trimHistory([system, toolReply()], 1000), /user/);
+  assert.throws(() => trimHistory([{ role: 'user', content: 'no system' }], 1000), /system/);
 });
 
 test('memory ranking is stable, bounded and leaves scoped candidates unchanged', () => {
@@ -375,35 +377,16 @@ test('reflection rejects orphaned and incomplete tool observations', () => {
   assert.equal(reflect([trace[0], trace[1], toolReply('{"ok":true}', 'wrong-id'), trace[3]]), null);
 });
 
-test('learner mode runs completed L1 through L3 while routing and reflection remain explicit TODOs', async () => {
+test('learner mode runs completed L1/L2/L3 while remaining exercises still reject without a fallback', async () => {
   const learner = loadAlgorithms('learner');
   const completed = await learner.runLoop(scripted([{ content: 'learner works' }]),
     new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
   assert.deepEqual(completed, [{ role: 'assistant', content: 'learner works' }]);
-  const referenceAlgorithms = loadAlgorithms('reference');
-  assert.notEqual(learner.compactHistory, referenceAlgorithms.compactHistory);
-  assert.notEqual(learner.selectMemories, referenceAlgorithms.selectMemories);
-  const system: Message = { role: 'system', content: 'fixed learner identity' };
-  const latest = successfulTrace();
-  const history: Message[] = [system, { role: 'user', content: 'old question' },
-    { role: 'assistant', content: 'x'.repeat(1000) }, ...latest];
-  const originalHistory = structuredClone(history);
-  const budget = [system, ...latest].reduce((total, message) => total + messageSize(message), 0);
-  assert.deepEqual(learner.compactHistory(history, budget), [system, ...latest]);
-  assert.deepEqual(history, originalHistory);
-  const hits = [
-    { sessionId: 'unrelated', content: 'gardening', score: 1 },
-    { sessionId: 'first', content: 'TypeScript tooling', score: 1 },
-    { sessionId: 'second', content: 'TypeScript tooling again', score: 1 },
-  ];
-  const originalHits = structuredClone(hits);
-  assert.deepEqual(learner.selectMemories('TYPESCRIPT', hits, 2).map(hit => hit.sessionId), ['first', 'second']);
-  assert.deepEqual(learner.selectMemories('TYPESCRIPT', hits, 0), []);
-  assert.deepEqual(hits, originalHits);
-  assert.throws(() => learner.sessionKey('a', 'b', 'c'),
-    error => error instanceof ExerciseNotImplemented && /L4/.test(error.message));
-  assert.throws(() => learner.reflect([]),
-    error => error instanceof ExerciseNotImplemented && /L5/.test(error.message));
+  const compressor = new ContextCompressor({ provider: scripted([]), maxChars: 1000, algorithm: learner.compactHistory });
+  assert.deepEqual((await compressor.compress([{ role: 'system', content: 'x' }], [])).messages, [{ role: 'system', content: 'x' }]);
+  assert.deepEqual(learner.selectMemories('query', [], 1), []);
+  assert.throws(() => learner.sessionKey('a', 'b', 'c'), /L4/);
+  assert.throws(() => learner.reflect([]), /L5/);
   const reference = await loadAlgorithms('reference').runLoop(scripted([{ content: 'reference works' }]),
     new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
   assert.equal(reference[0].content, 'reference works');

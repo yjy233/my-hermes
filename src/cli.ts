@@ -61,7 +61,7 @@ function settingsFor(values: Parsed['values']): Settings {
     model: values.model, baseUrl: values['base-url'],
     autoReflect: values['auto-reflect'] ? true : values['no-auto-reflect'] ? false : undefined,
     // 命令行覆盖只影响本次进程；不改写已有 profile 配置。
-    compressionEnabled: values.compression === undefined ? undefined : values.compression === 'advanced',
+    compression: values.compression === undefined ? undefined : { enabled: values.compression === 'advanced' },
   });
   settings.plugins.push(...(values.plugin ?? []).map(path => resolve(path)));
   return settings;
@@ -181,10 +181,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     if (command === 'doctor') {
       print({ node: process.versions.node, home: settings.home, mode: settings.mode, provider: settings.provider,
         providerMode: settings.providerMode,
-        compression: { enabled: settings.compressionEnabled, threshold: settings.compressionThreshold,
-          targetRatio: settings.compressionTargetRatio, summaryChars: settings.compressionSummaryChars,
-          tailMessages: settings.compressionTailMessages, toolChars: settings.compressionToolChars,
-          timeoutMs: settings.compressionTimeoutMs, memoryFlush: settings.compressionMemoryFlush },
+        compression: { ...settings.compression, memoryFlush: settings.compressionMemoryFlush },
         apiKeyConfigured: settings.provider === 'kimi'
           ? Boolean(process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY)
           : Boolean(process.env.MY_HERMES_API_KEY || process.env.OPENAI_API_KEY),
@@ -199,11 +196,9 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     const provider = createProvider(settings);
     const agent = new Agent({ provider, store, memory: new LongTermMemory(resolve(settings.home, 'memory')),
       skills: catalogFor(settings), mode: settings.mode, maxSteps: settings.maxSteps, contextChars: settings.contextChars,
+      compression: { ...settings.compression, memoryFlush: settings.compressionMemoryFlush },
+      summaryProvider: settings.compression.summaryModel ? createProvider({ ...settings, model: settings.compression.summaryModel }) : undefined,
       turnTimeoutMs: settings.turnTimeoutMs, plugins: settings.plugins, autoReflect: settings.autoReflect,
-      compression: { enabled: settings.compressionEnabled, threshold: settings.compressionThreshold,
-        targetRatio: settings.compressionTargetRatio, summaryChars: settings.compressionSummaryChars,
-        tailMessages: settings.compressionTailMessages, toolChars: settings.compressionToolChars,
-        timeoutMs: settings.compressionTimeoutMs, memoryFlush: settings.compressionMemoryFlush },
       evolution: new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills')),
       emit: values.trace ? traceWriter(settings.home) : undefined });
     gateway = new Gateway(agent, store, loadAlgorithms(settings.mode).sessionKey,

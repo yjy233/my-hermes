@@ -1,7 +1,11 @@
 import { abortable, KeyedMutex, withTimeout } from './async.js';
 import { buildRegistry } from './builtin-tools.js';
 import { ContextBudgetExceeded } from './errors.js';
-import { messageSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from './models.js';
+import { requestSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from './models.js';
+import { ContextCompressor } from './compression/compressor.js';
+import { CompressingProvider } from './compression/provider.js';
+import { compressionSettings, type CompressionSettings } from './compression/settings.js';
+import { trimHistory } from './compression/trim.js';
 import { loadAlgorithms, type Algorithms, type Mode } from '../learning/index.js';
 import type { LongTermMemory, SessionStore } from '../memory/index.js';
 import type { SkillCatalog } from '../skills/catalog.js';
@@ -14,10 +18,10 @@ export interface AgentOptions {
   provider: Provider; store: SessionStore; memory: LongTermMemory; skills: SkillCatalog;
   mode?: Mode; maxSteps?: number; contextChars?: number; turnTimeoutMs?: number;
   plugins?: string[]; evolution?: EvolutionManager; autoReflect?: boolean; emit?: Emit;
-  /** 高级模式在每次请求前生成摘要视图；enabled:false 保留 L2 的整轮裁剪练习。 */
-  compression?: CompressionOptions;
-  /** 可选的辅助摘要/记忆整理模型；未提供时复用主 Provider。 */
+  compression?: Partial<CompressionSettings> & CompressionOptions;
   summaryProvider?: Provider;
+  /** 默认采用异步 L2；checkpoint 保留合并前的摘要引擎 API，不能叠加两套压缩。 */
+  contextEngine?: 'hermes' | 'checkpoint';
 }
 
 export class Agent {
@@ -26,13 +30,18 @@ export class Agent {
   private readonly maxSteps: number;
   private readonly contextChars: number;
   private readonly turnTimeoutMs: number;
-  private readonly compression: Required<CompressionOptions>;
+  private readonly compression: CompressionSettings;
   constructor(private readonly options: AgentOptions) {
     this.algorithms = loadAlgorithms(options.mode ?? 'reference');
     this.maxSteps = options.maxSteps ?? 8;
     this.contextChars = options.contextChars ?? 24_000;
     this.turnTimeoutMs = options.turnTimeoutMs ?? 120_000;
-    this.compression = resolveCompressionOptions(options.compression);
+    const input = options.compression ?? {};
+    this.compression = compressionSettings(Object.fromEntries(Object.entries({
+      enabled: input.enabled, threshold: input.threshold, summaryChars: input.summaryChars,
+      timeoutMs: input.timeoutMs, protectFirst: input.protectFirst, protectLast: input.protectLast ?? input.tailMessages,
+      abortOnFailure: input.abortOnFailure, summaryModel: input.summaryModel,
+    }).filter(([, value]) => value !== undefined)));
     if (!Number.isSafeInteger(this.maxSteps) || this.maxSteps < 1 ||
         !Number.isSafeInteger(this.contextChars) || this.contextChars < 1000 ||
         !Number.isFinite(this.turnTimeoutMs) || this.turnTimeoutMs <= 0 || this.turnTimeoutMs > 2_147_483_647) {
@@ -58,9 +67,29 @@ export class Agent {
       store.setSystemPrompt(session.id, prompt);
     }
     const user: Message = { role: 'user', content: text };
-    // 原始历史与请求视图分开：高级引擎必须看到完整历史，才能校验检查点指纹和增量摘要。
-    const original: Message[] = [{ role: 'system', content: prompt }, ...store.loadMessages(session.id), user];
-    const registry = buildRegistry(memory, store, skills, scope, this.algorithms);
+    const checkpointMode = this.options.contextEngine === 'checkpoint';
+    const history = this.compression.enabled && !checkpointMode ? store.loadContextMessages(session.id) : store.loadMessages(session.id);
+    const fullContext: Message[] = [{ role: 'system', content: prompt }, ...history, user];
+    // L2 在每次模型请求前异步执行；关闭语义压缩时只使用独立的同步裁剪辅助策略。
+    let currentTrajectory: Message[] = [user];
+    let requestSource = fullContext;
+    const registry = buildRegistry(memory, store, skills, scope, this.algorithms, () => {
+      // 本轮尚未提交的工具原文也能找回；查询结果自身不再次进入候选，避免递归膨胀。
+      const names = new Map<string, string>();
+      const hits = [];
+      for (const message of currentTrajectory) {
+        if (message.role === 'assistant') {
+          names.clear();
+          for (const call of message.toolCalls ?? []) names.set(call.id, call.name);
+        } else if (message.role === 'tool' && message.toolCallId) {
+          if (names.get(message.toolCallId) !== 'history_search') {
+            hits.push({ sessionId: session.id, content: message.content, score: 1 });
+          }
+          names.delete(message.toolCallId);
+        }
+      }
+      return hits;
+    });
     const plugins = new PluginManager(registry);
     await abortable(plugins.load(this.options.plugins ?? []), signal);
     signal.throwIfAborted();
@@ -72,24 +101,53 @@ export class Agent {
       }
     };
     emit('turn.start', {});
-    // 基础模式也要给实际启用的工具 schema 留空间，不能裁到消息预算刚好满后再必然超限。
     const messageBudget = this.contextChars - JSON.stringify(registry.schemas()).length;
     if (messageBudget < 1) throw new ContextBudgetExceeded('Tool schemas exceed the context budget');
-    const context = this.compression.enabled ? original : this.algorithms.compactHistory(original, messageBudget);
-    const budgetProvider = new BudgetProvider(this.options.provider, this.contextChars);
+    const context = this.compression.enabled ? fullContext : trimHistory(fullContext, messageBudget);
     const auxiliary = this.options.summaryProvider ?? this.options.provider;
-    const engine = this.compression.enabled ? new ContextEngine(budgetProvider, this.contextChars, this.compression, {
-      checkpoint: store.loadCheckpoint(session.id), summaryProvider: auxiliary, emit,
-      flushMemory: (source, flushSignal) => flushLongTermMemory(auxiliary, registry, memory, scope,
-        source, this.contextChars, emit, flushSignal),
-    }) : undefined;
-    // 包在 Provider 边界，不改写 L1 的 context/delta：工具循环每一步都能处理上下文压力。
-    const delta = await abortable(this.algorithms.runLoop(engine ?? budgetProvider,
-      registry, context, this.maxSteps, emit, signal), signal);
-    signal.throwIfAborted();
-    validateTurn(delta);
-    // 摘要和原始成功轨迹在一个 SQLite 事务中提交，取消/失败轮次不会留下半截检查点。
-    store.commitTurn(session.id, [user, ...delta], engine?.checkpointDraft());
+    const flush = async (_source: Message[], flushSignal: AbortSignal): Promise<void> => {
+      if (this.options.compression?.memoryFlush === false) return;
+      const latestUser = requestSource.findLast(message => message.role === 'user');
+      await flushLongTermMemory(auxiliary, registry, memory, scope,
+        [...requestSource, ...(latestUser ? [latestUser] : [])], this.contextChars, emit, flushSignal);
+    };
+    const previousState = store.loadCompressionState(session.id);
+    const compressor = new ContextCompressor({ provider: this.options.provider, summaryProvider: this.options.summaryProvider,
+      maxChars: this.contextChars, settings: this.compression, state: previousState, memory: prompt, emit,
+      algorithm: this.algorithms.compactHistory, beforeSummary: flush });
+    const provider = new CompressingProvider(new BudgetProvider(this.options.provider, this.contextChars), compressor, this.contextChars);
+    const checkpointOptions = this.options.compression ?? {};
+    const checkpointEngine = checkpointMode && this.compression.enabled ? new ContextEngine(
+      new BudgetProvider(this.options.provider, this.contextChars), this.contextChars, resolveCompressionOptions({
+        enabled: checkpointOptions.enabled, threshold: checkpointOptions.threshold,
+        summaryChars: checkpointOptions.summaryChars, timeoutMs: checkpointOptions.timeoutMs,
+        targetRatio: checkpointOptions.targetRatio, tailMessages: checkpointOptions.tailMessages,
+        toolChars: checkpointOptions.toolChars, memoryFlush: checkpointOptions.memoryFlush,
+      }), { checkpoint: store.loadCheckpoint(session.id), summaryProvider: auxiliary, emit, flushMemory: flush }) : undefined;
+    const selected = checkpointMode ? checkpointEngine ?? new BudgetProvider(this.options.provider, this.contextChars) : provider;
+    const observing: Provider = { complete: (messages, tools, modelSignal) => {
+      requestSource = messages;
+      currentTrajectory = messages.slice(context.length - 1);
+      return selected.complete(messages, tools, modelSignal);
+    } };
+    let delta: Message[];
+    try {
+      delta = await abortable(this.algorithms.runLoop(observing, registry, context, this.maxSteps, emit, signal), signal);
+      signal.throwIfAborted();
+      validateTurn(delta);
+      if (checkpointMode) store.commitTurn(session.id, [user, ...delta], checkpointEngine?.checkpointDraft());
+      else {
+        const completed = provider.hasRequests ? provider.completedContext(delta.at(-1)!) : [...context, ...delta];
+        store.appendMessages(session.id, [user, ...delta], this.compression.enabled ? {
+          messages: completed.slice(1), state: compressor.snapshot(),
+        } : undefined);
+      }
+    } catch (error) {
+      if (!checkpointMode && !signal.aborted && JSON.stringify(previousState) !== JSON.stringify(compressor.snapshot())) {
+        store.saveCompressionState(session.id, compressor.snapshot());
+      }
+      throw error;
+    }
     emit('turn.persisted', { newMessages: delta.length + 1 });
     if (this.options.autoReflect && this.options.evolution) {
       try {
@@ -106,7 +164,7 @@ export class BudgetProvider implements Provider {
   constructor(private readonly delegate: Provider, private readonly maxChars: number) {}
   async complete(messages: Message[], tools: ToolSchema[], signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (messages.reduce((size, message) => size + messageSize(message), 0) + JSON.stringify(tools).length > this.maxChars) {
+    if (requestSize(messages, tools) > this.maxChars) {
       throw new ContextBudgetExceeded('Messages and tool schemas exceed the per-request context budget');
     }
     const response = await abortable(this.delegate.complete(messages, tools, signal), signal);

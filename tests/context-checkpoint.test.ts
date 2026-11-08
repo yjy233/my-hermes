@@ -107,6 +107,35 @@ test('迟到的旧代际或回退的覆盖范围不能覆盖更新检查点', t 
   assert.deepEqual(store.loadMessages(session.id), [...first, ...second]);
 });
 
+test('指纹正确但覆盖边界拆开多工具组时，原始新轮次与摘要一起回滚', t => {
+  const { store, session } = fixture(t);
+  const original = turn('saved before tools');
+  store.appendMessages(session.id, original);
+  const pending: Message[] = [
+    { role: 'user', content: '运行两个工具' },
+    { role: 'assistant', content: '', toolCalls: [
+      { id: 'first', name: 'calculator', arguments: { expression: '1+1' } },
+      { id: 'second', name: 'calculator', arguments: { expression: '2+2' } },
+    ] },
+    { role: 'tool', content: '2', toolCallId: 'first' },
+    { role: 'tool', content: '4', toolCallId: 'second' },
+    { role: 'assistant', content: '两个结果都已核对。' },
+  ];
+  const transcript = [...original, ...pending];
+  for (const cut of [original.length + 2, original.length + 3]) {
+    const checkpoint = { ...draft(transcript), coveredCount: cut,
+      prefixHash: hashContextPrefix(transcript.slice(0, cut)) };
+    assert.throws(() => store.commitTurn(session.id, pending, checkpoint), /Tool boundary/u);
+    assert.deepEqual(store.loadMessages(session.id), original);
+    assert.equal(store.loadCheckpoint(session.id), null);
+  }
+  const validCut = original.length + 4;
+  store.commitTurn(session.id, pending, { ...draft(transcript), coveredCount: validCut,
+    prefixHash: hashContextPrefix(transcript.slice(0, validCut)) });
+  assert.equal(store.loadCheckpoint(session.id)?.coveredCount, validCut);
+  assert.deepEqual(store.loadMessages(session.id), transcript);
+});
+
 test('检查点按会话隔离，其他用户的历史不能通过前缀校验', t => {
   const { store, session: alice } = fixture(t);
   const bob = store.getOrCreate('bob-chat', 'bob');
@@ -167,7 +196,7 @@ test('手工损坏的检查点显式报错，原始消息仍可读取和搜索',
   const messages = turn('source_marker');
   store.commitTurn(session.id, messages, draft(messages));
   const raw = new DatabaseSync(path);
-  raw.prepare('UPDATE context_checkpoints SET summary = ? WHERE session_id = ?').run('', session.id);
+  raw.prepare('UPDATE summary_checkpoints SET summary = ? WHERE session_id = ?').run('', session.id);
   raw.close();
   assert.throws(() => store.loadCheckpoint(session.id), /Invalid stored context checkpoint/);
   assert.deepEqual(store.loadMessages(session.id), messages);

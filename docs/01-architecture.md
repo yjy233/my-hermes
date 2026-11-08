@@ -10,8 +10,8 @@ flowchart TB
     JSONL[JSONL connector] --> GW
     HTTP[Local HTTP connector + bearer token] --> GW
     GW --> CORE[Core Agent: prompt + bounded tool loop]
-    CORE --> CTX[Context Engine: budget + prune + summary]
-    CTX --> MODEL[Provider: demo / Kimi / compatible API]
+    CORE --> COMPRESS[ContextCompressor: prune + summarize + recover]
+    COMPRESS --> MODEL[Provider: demo / Kimi / compatible API]
     CORE --> TOOLS[Tool Registry: schemas + limits + errors]
     CORE --> MEM[Memory: Markdown + SQLite sessions]
     CORE --> SK[Skills: index then on-demand read]
@@ -31,9 +31,9 @@ flowchart TB
 
 - Core 的 reference/learner 选择 L1～L5；Kimi Provider 独立提供 L0 练习与参考实现，通过 --provider-mode 选择，默认 learner。未完成会明确报错，绝不暗中回退。阶段检查的 --mode 选择当前阶段的学习实现。
 - 同一会话串行，不同会话可并发；路由包含 channel、conversation、user。稳定 event ID 用于已完成消息去重。
-- SQLite 保存成功轮次的完整消息和工具配对；裁剪只改变下一次模型上下文，不覆盖历史。数据库通过 Node 内置 `node:sqlite` 访问，未引入外部数据库包。
-- 默认高级 ContextEngine 包装 Provider，每次请求前清理旧工具输出并按需生成增量摘要，构造派生请求视图；原始轨迹和冻结 system 不改写。摘要检查点与成功轮次原子提交，失败不静默丢历史。`--compression basic` 保留同步 L2 的整轮裁剪，详见 [高级上下文压缩](08-context-compression.md)。
+- SQLite 保存成功轮次的完整消息和工具配对；压缩后的工作上下文另存 checkpoint，与成功轮次在同一事务提交。重启按消息水位恢复，原始历史仍可检索。数据库通过 Node 内置 `node:sqlite` 访问，未引入外部数据库包。
 - 按用户 scope 隔离有界 `MEMORY.md` 与 `USER.md`；新会话构建冻结快照，写入后通过工具可读到即时值，新会话才更新系统提示。
+- 长期记忆通过 `memory` 工具原子应用同一目标的批次新增、片段修改和条目删除；超容量时返回当前条目与所需空间，交给模型整理重试。摘要前的受限整理只开放这个工具，不运行业务工具，也不把整段摘要直接存为长期事实。
 - Skills 只提前加载名称/描述，正文按需读。新会话刷新索引，使长驻 Gateway 能发现刚批准的 Skill；已有会话保留原快照。
 - Plugin 只加载显式指定入口，统一注册工具和观察 Hook，拒绝覆盖已有工具。Node 动态 import 缓存模块，修改插件后需重启。
 - 模型请求、工具执行、回合与步数均有预算。用户输入与单次模型文本最多 16,000 字符；单响应最多 8 个工具调用，每个参数对象序列化后最多 16,000 字符。拒绝 NaN/Infinity，避免非 JSON 数值进入历史。
@@ -50,23 +50,26 @@ flowchart TB
 | 接口 | 契约 |
 | --- | --- |
 | `Provider.complete(messages, tools, signal?)` | 返回 `Promise<ModelResponse>`；支持取消与统一响应校验 |
-| `ContextEngine` | 包装 Provider；`prepare` 构造压缩请求视图，`checkpointDraft` 返回待成功提交的摘要 |
+| `Algorithms.compactHistory(messages, tools, runtime, signal?, force?)` | L2 异步压缩主流程，返回 `Promise<CompressionResult>`；按 mode 选择 learner/reference |
+| `ContextCompressor.compress(messages, tools, signal?, force?)` | 调用选定 L2；向算法提供模型请求、冷却状态和提交校验 |
 | `ToolRegistry.schemas()` / `execute(call, signal?)` | 返回工具 schema / `Promise<Message>`；验参、限时、结构化错误 |
-| `SessionStore(path)` | `getOrCreate`、`setSystemPrompt`、`loadMessages`、`appendMessages`、`commitTurn`、`loadCheckpoint`、`search`、`listSessions`、`close` |
-| `LongTermMemory(root, maxChars = 4000)` | `snapshot(scope)`、`read(scope, target)`、`write(scope, target, content)`；target 只允许两个记忆文件 |
+| `SessionStore(path)` | 保存原始历史、默认压缩工作上下文与冷却状态；独立摘要检查点 API 保留代际与前缀指纹校验 |
+| `LongTermMemory(root, maxChars = 4000)` | `snapshot`、`read`、`write`、`manage(scope, target, operations)`；路径由 scope 与限定目标决定 |
 | `SkillCatalog(roots)` | `discover()`、`index()`、`read(name)` |
 | `PluginManager(registry)` | `await load(paths)`；context 提供 `registerTool` 和 `on`；`emit` 观察事件 |
 | `EvolutionManager(root, skillsRoot)` | `propose`、`listProposals`、`approve`；提升只由本地 CLI 显式调用 |
 | `Gateway.handle(message, signal?)` | 归一化事件 → 授权 → 会话串行 → Agent → 缓存回复 |
 
-L0 是 `src/core/providers/kimi.ts` 的 complete；其余学习接口在 `src/learning/exercises.ts`：`runLoop`、`compactHistory`、`selectMemories`、`sessionKey`、`reflect`。消息大小与响应检查辅助函数位于 `core/models.ts`，共享异常位于 `core/errors.ts`。
+L0 是 `src/core/providers/kimi.ts` 的 complete；其余学习接口在 `src/learning/exercises.ts`：`runLoop`、`compactHistory`、`selectMemories`、`sessionKey`、`reflect`。L2 直接编排清理、分区、prompt 构造、摘要请求和失败决策；`core/compression` 提供共享辅助函数与运行环境，关闭语义压缩时才使用 `trim.ts` 的整轮裁剪。消息大小与响应检查辅助函数位于 `core/models.ts`，共享异常位于 `core/errors.ts`。
+
+默认链路只运行 `ContextCompressor`，不再叠加另一层摘要。此前的 `ContextEngine` 保留为可选库 API，程序调用时显式设置 `AgentOptions.contextEngine: 'checkpoint'` 才选择它；其 `summary_checkpoints` 表与默认链路的 `context_checkpoints` 工作视图分开。两种实现的配置、检查点格式和故障策略不同，详见 [上下文压缩](08-context-compression.md)。
 
 ## 数据流与故障
 
 1. 连接器检查并归一化输入，Gateway 检查用户、event ID 与会话路由。
-2. Agent 恢复完整历史、冻结系统提示和可验证摘要检查点；高级 ContextEngine 按预算准备请求视图。
-3. Provider 返回文本或工具调用；Registry 校验、执行、包装结果，每次再次请求仍经过上下文引擎，直到最终文本或预算耗尽。
-4. 成功轮次与新摘要检查点一次性提交到 SQLite；可选反思只生成待审核候选，其失败不撤销已保存答复。
+2. Agent 恢复工作上下文（无有效 checkpoint 时恢复完整历史）和冻结的系统提示。
+3. 每次 Provider 请求前按预算清理/摘要；需要摘要时可先受限整理长期记忆。Registry 校验、执行、包装工具结果，循环直到最终文本或预算耗尽。详见 [上下文压缩](08-context-compression.md)。
+4. 成功轮次及工作上下文一次性提交 SQLite；可选反思只生成待审核候选，其失败不撤销已保存答复。
 5. Gateway 写入已完成回复，重复事件返回同一文本；冲突或失败以错误返回。
 
 每个 profile 同时只由一个 chat/gateway 运行实例拥有。`.runtime.lock/owner.json` 记录 PID 和随机 token；正常退出核对所有权后释放目录，异常退出留下目录，由用户确认旧进程已停止后手动恢复。锁不自动回收陈旧 PID，也不提供分布式租约。

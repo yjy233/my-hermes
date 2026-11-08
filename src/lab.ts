@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { calculate, objectSchema } from './core/builtin-tools.js';
-import { messageSize, type Emit, type Message } from './core/models.js';
+import { type Emit, type Message } from './core/models.js';
 import { DemoProvider } from './core/providers.js';
 import { ToolRegistry } from './core/tools.js';
+import { ContextCompressor } from './core/compression/compressor.js';
 import { EvolutionManager } from './evolution/index.js';
 import { Gateway } from './gateway/index.js';
 import { loadAlgorithms, type Algorithms, type Mode } from './learning/index.js';
@@ -15,7 +16,7 @@ import { LongTermMemory, SessionStore } from './memory/index.js';
 import { PluginManager } from './plugins/index.js';
 import { SkillCatalog } from './skills/index.js';
 import { algorithmCases } from './stages/contracts.js';
-import { compressionCases } from './stages/compression.js';
+import { compressionCases as checkpointCases } from './stages/checkpoint.js';
 import { extensionCases } from './stages/extensions.js';
 import { providerCases } from './stages/provider.js';
 import { runStageCases, type StageResult, type StageRunOptions } from './stages/runner.js';
@@ -43,7 +44,7 @@ export async function checkStage(stage: number, mode: Mode = 'reference', option
     4: 'Skill 渐进读取与 Plugin 工具调用', 5: '候选审核与 Skill 提升闭环',
   }[stage]!;
   const result = await runStageCases(stage, mode, [
-    ...algorithmCases(stage, algorithms, emit), ...(stage === 2 ? compressionCases(emit) : []),
+    ...algorithmCases(stage, algorithms, emit), ...(stage === 2 ? checkpointCases(emit) : []),
     ...(stage === 4 ? extensionCases() : []), {
     name: scenarioName,
     run: async signal => {
@@ -78,15 +79,17 @@ async function runScenario(stage: number, algorithms: Algorithms, emit: Emit,
       const system: Message = { role: 'system', content: 'fixed identity' };
       const old: Message[] = [{ role: 'user', content: 'old' }, { role: 'assistant', content: 'x'.repeat(500) }];
       const latest: Message[] = [{ role: 'user', content: 'new' }, { role: 'assistant', content: 'done' }];
-      const budget = [system, ...latest].reduce((size, message) => size + messageSize(message), 0);
-      assert.deepEqual(algorithms.compactHistory([system, ...old, ...latest], budget), [system, ...latest]);
+      const compressor = new ContextCompressor({ provider: new DemoProvider(), maxChars: 24_000,
+        algorithm: algorithms.compactHistory, emit });
+      const context = await compressor.compress([system, ...old, ...latest], [], signal);
+      assert.deepEqual(context.messages, [system, ...old, ...latest]);
       const hits = [{ sessionId: 'old', content: 'gardening', score: 1 }, { sessionId: 'new', content: 'TypeScript tooling', score: 1 }];
       assert.equal(algorithms.selectMemories('TypeScript', hits, 1)[0].content, 'TypeScript tooling');
       const memory = new LongTermMemory(join(root, 'memory'));
       memory.write('alice', 'MEMORY.md', 'TypeScript tooling');
       assert.match(memory.snapshot('alice'), /TypeScript tooling/);
       assert.doesNotMatch(memory.snapshot('bob'), /TypeScript tooling/);
-      return { stage, status: 'passed', contextMessages: 3 };
+      return { stage, status: 'passed', contextMessages: context.messages.length };
     }
     if (stage === 3) {
       let executions = 0;

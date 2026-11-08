@@ -2,7 +2,7 @@
 
 一个以 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 为主要参考的 TypeScript Agent 学习项目：外围框架可运行，核心算法留给学习者，完整参考实现可随时观察和对照。
 
-包含 **Core、Gateway、连接器、短长期记忆、Skills、Plugin、自进化候选与审核**。高级上下文压缩支持工具输出清理、结构化摘要、持久检查点和压缩前长期记忆整理。需要 **Node.js 24+**；运行时仅用内置模块。Kimi Provider 已完整实现，Demo 与阶段验收可离线运行。
+包含 **Core、Gateway、连接器、短长期记忆、Skills、Plugin、自进化候选与审核**。需要 **Node.js 24+**；运行时仅用内置模块。Kimi Provider 已完整实现，Demo 与阶段验收可离线运行。
 
 ![项目架构](docs/images/architecture.png)
 
@@ -44,7 +44,7 @@ npm run build
 - Core 的 `--mode reference/learner` 选择完整算法或 [exercises.ts](src/learning/exercises.ts) 中的 L1～L5。
 - Kimi 的 `--provider-mode learner/reference` 独立选择 [kimi.ts](src/core/providers/kimi.ts) 中已完成的主实现或对照版；主实现不会回退到参考版。
 
-基础设施、Kimi 连接、L1 runLoop、L2 上下文裁剪与 L3 召回排序已实现，可阅读中文注释、调试并与参考版对照。**L4/L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
+基础设施、Kimi 连接、L1 runLoop、L2 compactHistory 和 L3 selectMemories 已实现，可阅读中文注释、调试并与参考版对照。L2 就是运行时默认启用的异步语义压缩主流程，L3 用于同用户跨会话的历史召回，`--mode` 决定实际调用哪份实现。**L4/L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
 
 | 阶段 | 学习内容 | 当前状态 / 学习任务 | 独立验收 |
 | --- | --- | --- | --- |
@@ -55,7 +55,7 @@ npm run build
 | 4 | Skills 与可信 Plugin | 添加自己的 Skill / Tool Plugin | `npm run dev -- check --stage 4 --mode learner` |
 | 5 | 自进化：成功轨迹到技能候选 | L5 `reflect` | `npm run dev -- check --stage 5 --mode learner` |
 
-`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。阶段 2 用 11 个具名 case 验收基础 L2/L3 和高级记忆能力；完整 learner 聊天仍需补齐 L4 路由，反思使用 L5。下一步可独立实现阶段 3 的 `sessionKey`。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
+`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。L1～L3 已完成，完整 learner 聊天仍需补齐 L4，反思使用 L5；下一步可实现阶段 3 的路由。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
 
 每阶段先看参考，再调试自己的代码；将阶段数字换成 0～5：
 
@@ -65,7 +65,7 @@ npm run dev -- check --stage 0 --mode learner --trace --debug
 npm run dev -- check --all --mode learner
 ```
 
-结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`，不会回退到答案。阶段 0～2 是已完成主实现，阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
+结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`，不会回退到答案。阶段 0/1/2 是已完成主实现，阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
 
 调试 TypeScript：
 
@@ -86,9 +86,9 @@ npm run dev -- chat --provider demo --mode reference --message '/skill study-not
 npm run dev -- chat --provider demo --mode reference --plugin ./examples/plugins/word-count.ts
 ```
 
-长期记忆是按用户隔离的 `MEMORY.md` / `USER.md`，每文件默认 4000 字符。新增 `memory` 工具支持 add/patch/remove 批次，超容量时由模型合并后重试，不静默丢条目；`/remember` 仍是整篇替换演示。已有会话的系统提示保持快照，新会话读取更新后的记忆。
+长期记忆是按用户隔离的 `MEMORY.md` / `USER.md`，每文件默认 4000 字符，超限报错。`memory` 工具支持同一目标的批次 `add/patch/remove`，按整批最终容量原子写入；模型可先合并旧事实，再添加新事实。`/remember` 仍是整篇替换演示。已有会话的系统提示保持快照，新会话读取更新后的记忆。
 
-默认使用高级 `ContextEngine`：每次模型请求前计算含工具 schema 的字符预算，清理旧工具输出、保护近期工具组、生成并增量更新结构化摘要；压缩前可用受限记忆工具保存长期事实。摘要检查点和成功轮次在 SQLite 中原子提交，原始历史始终保留。L3 对 scope 内候选做稳定词项排序。使用 `--compression basic` 可回到同步 L2 的整轮裁剪；默认 `--compression advanced` 不改变 L2 练习接口。实现细节、配置和边界见 [高级上下文压缩](docs/08-context-compression.md)。
+L2 默认采用旧工具结果清理、头尾保护和中段模型摘要，支持辅助模型一次回退、失败冷却、Provider 确认溢出后的有界恢复与重启恢复。需要摘要时，可先运行只开放记忆工具的长期记忆整理。SQLite 另外保留成功轮次的完整消息；`history_search` 也能立即检索本轮尚未入库的已执行工具原文，检索仍为子串召回。压缩提示词、配置与边界见 [上下文压缩](docs/08-context-compression.md)；`--compression basic` 关闭语义压缩，改用独立辅助函数 `trimHistory` 整轮裁剪，`--compression advanced` 选择默认主链路。
 
 Skill 只提前注入名称/描述，正文通过工具按需读取。Plugin 是显式信任的 TypeScript / JavaScript 模块，导出 `register(context)` 注册工具与 Hook。离线 Demo 不自动选择任意插件工具；阶段 4 直接验收插件调用，真实模型可根据 schema 选择。插件不是沙箱，源文件修改后需重启进程。
 
@@ -147,7 +147,7 @@ src/
   lab.ts        0～5 六个离线阶段验收场景
 ```
 
-[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md) · [Kimi](docs/07-kimi-provider.md)
+[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md) · [Kimi](docs/07-kimi-provider.md) · [上下文压缩](docs/08-context-compression.md)
 
 运行数据默认存入 `.hermes-lab/`。用子命令的 `--home PATH` 或 `MY_HERMES_HOME` 隔离 profile；`config.json` 使用 `mode/providerMode/provider/model/baseUrl/maxSteps/contextChars/providerTimeoutMs/turnTimeoutMs/autoReflect/plugins` 等配置，命令行优先。`check/demo` 也读取所选 profile 的 mode，但始终用临时数据和离线 Provider，不加载其插件。
 

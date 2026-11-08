@@ -1,61 +1,78 @@
-# 高级上下文压缩与长期记忆整理
+# 上下文压缩与长期记忆整理
 
-高级模式借鉴 Hermes 的分层记忆思路：当前任务用结构化摘要维持连续性，跨会话信息保存在有容量上限的 Markdown 记忆中，完整经历仍留在 SQLite。摘要和长期记忆分别管理，不把整段聊天摘要直接写入 `MEMORY.md`。
+本实现参考本地 `/Users/bill/code/hermes-agent` 在 2026-11-05 的提交 `29a61cb7ab509cda0c376bf3860edb87210b0755`，主要阅读 `agent/context_compressor.py`、`context_compressor_window.py`、`context_compressor_summary.py` 与 `context_compressor_prune.py`。TypeScript 算法与提示词独立编写，不导入、调用或复制 Hermes 的 Python 实现。
 
-## 三份数据各自负责什么
-
-| 数据 | 用途 | 生命周期 |
-| --- | --- | --- |
-| 原始会话消息 | 保存用户输入、模型文本、工具参数、调用 ID、结果和推理协议字段，供恢复和检索 | 成功轮次完整追加到 `sessions.db`，压缩不删除它们 |
-| 会话摘要检查点 | 用更短的上下文接续当前任务，记录目标、约束、进度、决策和待办 | 随成功轮次提交，后续压缩增量更新；不作为跨用户共享记忆 |
-| `MEMORY.md` / `USER.md` | 保存值得跨会话复用的事实、项目约定和用户偏好 | 按 scope 隔离，工具原子写入；新会话读取冻结快照 |
-
-L2 的同步 `compactHistory` 仍保留为基础练习。高级模式使用独立、异步的 `ContextEngine`，接在模型 Provider 前面；参考 Core 和 learner Core 都可使用这层框架，学习者不需要把模型摘要请求塞进 `runLoop`。
-
-## 一次高级压缩如何发生
+## 请求中的位置
 
 ```mermaid
 flowchart TD
-  A[原始上下文与工具 schema] --> B{达到触发预算?}
-  B -->|否| C[请求主模型]
-  B -->|是| D[清理受保护范围之外的旧工具输出]
-  D --> D2{清理后仍达到触发预算?}
-  D2 -->|否| C
-  D2 -->|是| E[规划保留头部 当前用户 与近期原子工具组]
-  E --> F[可选 memory-only 整理长期记忆]
-  F --> G[旧摘要加新增历史 生成结构化摘要]
-  G --> H{摘要有效且上下文可用?}
-  H -->|是| I[摘要加保留消息 请求主模型]
-  H -->|否| J{原上下文仍在硬预算内?}
-  J -->|是| C
-  J -->|否| K[明确报错 保留原始历史]
-  I --> L[任务成功后原子保存原始轮次与摘要检查点]
+    A[恢复工作上下文和冻结的 system] --> B[runLoop 新增消息]
+    B --> C[CompressingProvider]
+    C --> L2[选定的 L2 compactHistory]
+    L2 --> D{达到阈值?}
+    D -->|是| E[清理旧工具结果 / 选择头中尾]
+    E --> M[可选 memory-only 长期记忆整理]
+    M --> F[摘要模型 / 有界回退]
+    F --> G[检查工具配对和实际缩减]
+    D -->|否| H[BudgetProvider]
+    G --> H
+    H --> I[主模型请求]
+    I -->|工具调用| B
+    I -->|最终答复| J[事务保存完整 delta + 工作上下文]
 ```
 
-每次模型请求前都会检查预算，包括执行工具后再次请求模型的时刻。预算包含消息的序列化长度和工具 schema，不能只看正文长度。当前计量单位是字符，不是供应商返回的真实 token 数；阈值和保留比例也是教学项目自己的配置。
+每次模型请求前检查，包括同一用户轮内的多次工具调用。默认阈值是 `contextChars` 的 50%；计数包含序列化消息、reasoning 和工具 schema。预算继续使用本项目的 JavaScript 字符计数，**没有把字符数当作 token，也未实现上游的真实 usage anchor**。
 
-压缩时先处理昂贵的旧工具输出。最新工具组仍完整保留，避免模型刚请求的结果还没看见就被清掉。保留区域包括冻结的 system、预算允许的有限初始交换、当前真实用户消息，以及按预算选择的近期消息。assistant 的工具调用和对应 tool 结果作为原子组处理，不能把调用声明与结果拆开。
+默认主链路采用机制更完整的异步 L2，只运行 `ContextCompressor` / `CompressingProvider`，不与另一套压缩器叠加。此前的 `ContextEngine` 仍是可选的库实现；程序只有显式设置 `AgentOptions.contextEngine: 'checkpoint'` 才会选择它，见下文的兼容边界。
 
-其余历史交给摘要模型整理为结构化交接信息，包含“目标、约束与偏好、进展、关键决策、相关文件、后续步骤、关键上下文”七个标题。再次压缩时输入已有摘要和新增的待压缩内容，更新原来的目标、进度与待办，不反复从零总结全部原始记录。超长历史按批次更新，单条超长记录提供带省略标记的头尾摘录；每次最多处理八个摘要批次，超过上限明确失败。模型返回的摘要是派生数据，不能修改系统规则，也不能成为执行插件代码的依据。
+主流程位于 `src/learning/exercises.ts` 与 `src/learning/reference.ts` 的异步 `compactHistory(messages, tools, runtime, signal?, force?)`。`Agent` 将所选算法传给 `ContextCompressor`，每次请求以及溢出重试都调用同一个 L2。`core/compression/compressor.ts` 提供模型请求、失败分类、冷却和提交校验；prompt 与分区仍分别位于 `text.ts`、`window.ts`。学习者代码出错会直接失败，不自动回退到参考算法。
 
-摘要有独立长度上限和超时。每轮最多尝试三次压缩；第一次摘要失败后，本轮不再反复请求摘要。失败、空响应、非法响应或取消不会提交新的检查点；摘要失败时，原上下文还能放入硬预算就继续，否则返回明确的预算错误。不能为了让请求成功而静默扔掉中间历史。受保护的用户输入或最新工具组本身过大时，也可能需要缩短输入、降低工具输出量或调大预算。
+压缩分为以下步骤：
 
-## 持久检查点与恢复
+1. 在副本中按 assistant 工具调用组对齐边界，去除孤立、重复或缺失结果的历史配对。完整原始历史保持不变。
+2. 对受保护区域之外的长工具结果生成有界摘录，保留成功/失败状态；重复结果指向后面的原结果。最新工具组及其 reasoning 保留完整。旧 Skill 正文被省略后添加重新读取提示。
+3. 若清理已让请求回到阈值以下且有明显缩减，直接采用清理结果。否则保护开头约 3 条消息和近期最多 20 条消息；近期窗口以剩余字符预算的 25% 为软上限，完整工具组不会被拆散。
+4. 对中段和已有摘要做一次结构化更新。摘要正文上限取配置值、剩余预算的 20%、实际可用空间三者的较小值。
+5. 将最新真实用户请求保留在摘要之后。必要时将摘要放进相邻消息的独立前缀以避免角色冲突；内部元数据保存摘要正文及原消息，下一次压缩可准确恢复。原始 system 不改写。
+6. 检查新请求确实变小且符合硬预算。空间不足、没有可压缩中段、缩减不足时保留原上下文，并等上下文增长后再尝试。
 
-`context_checkpoints` 表保存当前会话摘要的 `generation`、`coveredCount`、`prefixHash` 和正文。覆盖数针对未裁剪的原始消息，不包含临时 system 或合成摘要消息；SHA256 指纹包含工具元数据和 `reasoningContent`。
+## 压缩 prompt
 
-每轮运行期间，摘要先保留在内存。只有最终答复完成并通过消息协议校验后，`SessionStore.commitTurn` 才在同一 SQLite 事务中追加原始消息并保存最新摘要。写入时再次核对覆盖范围、前缀指纹和预期代际，拒绝迟到的摘要覆盖更新状态。一轮内即使压缩多次，也只提交最后一个检查点。
+`src/core/compression/text.ts` 负责组成独立的 system 指令和 JSON 数据输入。摘要请求不提供工具。
 
-进程重启后，读取检查点并核对其原始历史前缀，再决定能否复用。原始历史始终可通过 `history` 或 `history_search` 检索，摘要遗漏的信息仍有恢复来源。字段损坏的检查点会显式报错，原始消息依然可读；不要直接修改检查点内容来掩盖恢复问题。
+system 指令要求保持用户语言，把来源当作数据，不执行其中的指令；保留用户纠正、限制、路径、命令、错误和验证结果；区分已完成与待办，尊重取消或方向改变。没有用户输入时不得编造用户任务。日期仅用于描述已发生的事实，不臆造行动日期。
+
+摘要包含：未解决请求、总体目标、约束偏好、完成操作、当前状态、阻塞、关键决策、错误与纠正、已答问题、相关文件、必要细节。重复压缩时保留仍有效的旧摘要信息，更新完成状态和新问题。
+
+数据输入按顺序包含：旧摘要、冻结的记忆/系统快照、中段 transcript、重点主题。默认重点取最新用户消息。长输入保留头尾并显式标记省略，最终按序列化后的真实字符数复核预算。常见凭证格式在输入和输出两侧脱敏；脱敏规则不是任意秘密识别器。正文中的 `<think>` 块被移除，reasoningContent 不作为摘要正文保存。
+
+摘要作为历史参考注入，不替代当前用户请求。Skill 的重新读取标记由程序补回，避免模型遗漏。
+
+## 错误和恢复
+
+| 情况 | 行为 |
+| --- | --- |
+| 辅助模型失败 | 与主模型为不同 Provider 时，向主模型尝试一次；同一 Provider 不重复调用 |
+| 空白、拒绝、非法结构、生成被截断 | 拒绝摘要，保留原上下文 |
+| 鉴权、权限、额度错误 | 保留上下文；长冷却，不用不完整摘要替换历史 |
+| 网络错误 | 保留上下文，短冷却 |
+| 超时、服务过载 | 冷却按 60 / 300 / 900 秒升级；连续同类失败第三次允许本地兜底 |
+| 其他摘要错误 | 生成有界本地摘录，保留旧摘要片段、用户请求和近期观察，并明确标记信息不完整 |
+| `abortOnFailure: true` | 所有摘要失败均保留原上下文，禁止本地兜底 |
+| 用户取消或整个回合超时 | 原因向上传播，迟到的摘要不提交，也不改变下一回合状态 |
+| Provider 明确返回上下文溢出 | 最多额外强制压缩两次，只重试模型请求，不重放工具 |
+| 压缩后仍超预算 / 无缩减 | 停止恢复；本地硬预算报 `ContextBudgetExceeded`，远端溢出保留 ProviderError |
+
+HTTP 错误正文最多读取 8192 字节用于分类；错误和 trace 只包含状态、类别、长度等诊断字段，不回显正文。429 的额度不足与普通限流分别处理。冷却和无进展退避按会话保存；一次成功摘要清除失败计数。
 
 ## 压缩前整理长期记忆
 
-开启 `compressionMemoryFlush` 后，压缩前可以运行一次受限的记忆整理：只开放记忆工具，最多进行两次模型请求，把值得保留的用户偏好、项目事实和稳定约定写入对应 scope。它接收已有摘要与尚未覆盖的原始证据，并在末尾保留当前真实 user 锚点；辅助请求预算不足时，只对证据提供带省略标记的头尾摘录，不截断实时记忆。一些信息可能不在摘录中，模型只能依据可见证据整理，不能猜测缺失事实。一次性的命令输出、临时路径和整段推理记录不应占用长期记忆。
+当前任务摘要、长期记忆和原始会话各自保留。摘要记录工作进展，不自动成为跨会话事实；长期记忆只保存稳定偏好、项目约定和环境事实。需要生成摘要时，可先运行一次受限的记忆整理，只向模型开放 `memory` 工具，最多请求两次，以便在容量错误后合并旧条目并重试。纯文本表示没有值得保存的新事实，不写入文件。
 
-`memory` 工具的 `target` 为 `memory` 或 `user`，分别对应 `MEMORY.md` 和 `USER.md`。一批操作只写一个目标，支持：
+`memory` 工具用 `target: "memory"` 或 `"user"` 选择 `MEMORY.md` / `USER.md`，模型不能传入任意路径。每文件默认 4000 字符，条目以单独一行 `§` 分隔。每批只操作一个目标：
 
-- `add`：新增条目；完全重复的条目不重复写入。
-- `patch`：用唯一的 `old_text` 定位一段文字，只替换该片段，保留条目其他事实。
+- `add`：新增条目；精确重复的条目不重复写入。
+- `patch`：用唯一的 `old_text` 替换一个片段，保留条目其他事实。
 - `remove`：用唯一匹配定位并删除整条过时记录。
 
 ```json
@@ -68,73 +85,59 @@ flowchart TD
 }
 ```
 
-每文件默认 4000 字符，条目以 `§` 分隔。操作先在内存里应用，整批结果通过校验后只写一次文件；任一定位失败或最终结果超容量，整个批次不写入。容量错误会提供当前条目与空间信息，模型可以把“缩短旧条目”和“新增事实”放在同一批次重试，不需要先删除事实再赌下一次新增能否成功。超限不会自动丢弃旧条目。
+操作先在内存里演算，按整批最终容量校验后只写一次文件；即使 `add` 写在 `remove` 之前，也可以在同一批里腾出空间。定位失败、匹配歧义或最终超限时整个批次不写入，错误返回当前条目、用量和需要腾出的空间。模型应据此合并、修订后重试，存储层不会静默丢掉旧事实。
 
-长期记忆写入后，记忆工具可立即读取最新内容；当前会话的 system 快照保持冻结，新会话才注入更新后的快照。记忆工具写入属于已发生的副作用，若后续任务失败或取消，不保证撤销已经落盘的写入；这与 SQLite 检查点只在成功轮次提交的规则不同。
+辅助请求只开放记忆工具，不允许执行插件或业务工具；记忆快照和历史作为待核对的数据输入。凭证、原始日志、临时进度、一次性路径及推理过程不应进入长期记忆。辅助整理失败不等于主任务成功保存了记忆，也不证明模型具备可靠的事实提炼能力。
 
-兼容的 `memory_read` / `memory_write` 仍存在；Demo 的 `/remember` 仍演示整篇替换，不代表新工具的条目合并行为。
+长期记忆写入后工具可读实时值，当前 system 快照仍冻结，新会话才注入更新后的内容。记忆写入属于已发生的工具副作用，后续摘要或主任务失败、取消不保证撤销；这与 SQLite 成功轮次和工作上下文的事务提交不同。兼容的 `memory_read` / `memory_write` 仍存在；Demo 的 `/remember` 仍演示整篇替换。
 
-## 配置与切换
+## 保存与恢复
 
-高级模式默认开启。开发时可显式对照：
+`messages` 表始终保存成功轮次的完整记录。新增 `context_checkpoints` 表保存模型工作上下文、对应原始消息条数和冷却状态。成功回合把原始消息与 checkpoint 放在同一 SQLite 事务中提交；失败回合只可保存冷却信息，取消不提交摘要。
+
+重启后按原始消息水位恢复工作上下文，不重复总结全部历史。旧数据库自动创建新表，无需手工迁移。外部追加消息导致水位不匹配时回到完整历史。`history` 命令读取已提交的原始记录；`history_search` 还合并当前轮已执行工具的原文，排除检索工具自己的结果。即使工具输出已在本轮中被清理或摘要、尚未提交 SQLite，模型也能立即按原文关键词找回。临时候选只属于当前轮绑定的 scope，不把失败轮次提前写成成功历史。
+
+可选的 `ContextEngine` 库模式使用独立的 `summary_checkpoints` 表，保存 `generation`、`coveredCount`、前缀 SHA256 与结构化摘要；`loadCheckpoint` / `commitTurn` 保留这套接口，摘要与成功原始轮次原子提交。它不使用默认链路的消息水位与冷却状态表。旧的本地数据库若曾用 `context_checkpoints` 保存这一格式，会自动迁移到独立表，原始消息不改写。两张检查点表都是原始历史的派生数据，不能混用格式。
+
+## 配置与验证
+
+在 profile 的 `config.json` 中可添加：
+
+```json
+{
+  "compression": {
+    "enabled": true,
+    "threshold": 0.5,
+    "protectFirst": 3,
+    "protectLast": 20,
+    "summaryChars": 6000,
+    "timeoutMs": 30000,
+    "abortOnFailure": false,
+    "summaryModel": ""
+  },
+  "compressionMemoryFlush": true
+}
+```
+
+`summaryModel` 为空时使用主 Provider；指定后在相同 API 地址和凭证下创建辅助模型。代码调用也可通过 `AgentOptions.summaryProvider` 提供不同 Provider。摘要和记忆整理调用同样占用总回合超时。`compressionMemoryFlush` 控制摘要前的受限长期记忆整理，默认开启。
+
+默认自动启用高级模式，也可显式对照：
 
 ```sh
 npm run dev -- chat --provider demo --mode reference --compression advanced --trace
 npm run dev -- chat --provider demo --mode reference --compression basic --trace
 ```
 
-`basic` 使用同步 L2，进入模型循环前裁剪一次，循环内只做硬预算检查；`advanced` 在每次模型请求前运行异步引擎。Core 的 `--mode` 和压缩模式互相独立；完整 learner 聊天仍需要完成 L4 会话路由。
+`--trace` 可观察 `context.compression.*`、`context.summary.*` 和 `memory.flush.*`。DemoProvider 是确定性替身，长会话的语义效果仍应使用真实模型评估。
 
-profile 的 `config.json` 可设置：
+主配置采用上面的 `compression` 对象。此前本地版本的 `compressionEnabled`、`compressionThreshold`、`compressionSummaryChars`、`compressionTailMessages`、`compressionTimeoutMs` 等平铺字段仍可读取并映射到相应主配置；同一字段同时出现时，显式嵌套配置优先，命令行覆盖本次运行。`compressionTargetRatio` / `compressionToolChars` 保留给检查点库模式，不改变默认 L2 的 Hermes 风格分区策略。配置示例见 [context.json](../examples/config/context.json)。
 
-```json
-{
-  "compressionEnabled": true,
-  "compressionThreshold": 0.75,
-  "compressionTargetRatio": 0.5,
-  "compressionSummaryChars": 3000,
-  "compressionTailMessages": 8,
-  "compressionToolChars": 1200,
-  "compressionTimeoutMs": 20000,
-  "compressionMemoryFlush": true
-}
-```
-
-| 字段 | 含义 |
-| --- | --- |
-| `compressionEnabled` | 是否使用高级引擎；false 对应基础模式 |
-| `compressionThreshold` | 达到 `contextChars` 的这个比例时尝试整理；范围 `(0, 1]` |
-| `compressionTargetRatio` | 压缩后希望接近的预算比例，必须小于触发比例；保护消息可能使实际长度高于目标 |
-| `compressionSummaryChars` | 摘要正文上限，范围 256～16000 字符；小窗口还会进一步收紧实际摘要上限 |
-| `compressionTailMessages` | 近期保留消息数量的规划参数，实际边界要对齐工具原子组 |
-| `compressionToolChars` | 旧工具输出清理的长度参数，至少 80 字符 |
-| `compressionTimeoutMs` | 每个摘要批次或受限记忆整理步骤的超时预算；整个任务仍受 turnTimeoutMs 限制 |
-| `compressionMemoryFlush` | 是否启用压缩前的受限长期记忆整理 |
-
-程序调用时可以通过 `AgentOptions.summaryProvider` 注入独立摘要模型；CLI 默认复用主 Provider。真实模型执行压缩和记忆整理会产生额外请求，需将其计入超时与使用成本。Demo 是确定性替身，只验证控制流，不代表模型摘要质量。
-
-## 离线调试与验收
+`compression.enabled: false` 或 `--compression basic` 时使用 `core/compression/trim.ts` 的 `trimHistory` 辅助策略。L2 本身是异步语义压缩，learner 与 reference 都已有独立主流程，L3 召回排序也已实现；L4/L5 继续保留为练习。`check --stage 2 --mode learner` 可独立验收压缩、记忆整理和召回，不要求先完成路由与反思。
 
 ```sh
+node --import tsx --test tests/compression.test.ts tests/compression-http.test.ts
 npm run dev -- check --stage 2 --mode learner --trace --debug
-npm run typecheck
-npm test
-npm run build
+npm run verify
 ```
 
-先在 `src/core/context-engine.ts` 的 `prepare`、`chooseCut`、`summarize` 和 `checkpointDraft` 设置断点，再看 `SessionStore.commitTurn`。重点比较三份内容：传入循环的原始消息、真正发给 Provider 的压缩视图、SQLite 成功保存的完整轨迹。
-
-trace 可观察 `context.pruned`、`context.summary`、`context.compress.start/end/failed` 和 `memory.flush.start/end/failed`。这些事件提供大小、计数和错误类别，不输出摘要正文、用户记忆或原始推理字段。
-
-验收关注长期历史触发摘要、工具循环中再次触发、增量更新与重启恢复、最新工具组完整性、摘要失败/超时/取消，以及记忆批次容量与 scope 隔离。回归使用本机 Provider 替身，不需要真实 API key；真实摘要的事实保留率、误删和长任务表现仍需独立评估。
-
-阶段 2 共 11 个具名 case，本轮 learner 验收已通过 11/11。其中新增高级验收为：
-
-| Case | 观察内容 |
-| --- | --- |
-| `Context/structured-summary-and-tool-pairs` | 实际摘要请求、七个结构化标题、含 schema 的预算、最近工具组与原始输入 |
-| `Context/failure-keeps-original` | 无效摘要无法救回硬超限时明确失败，不生成检查点或修改原历史 |
-| `Context/checkpoint-restart` | 原始轮次与摘要成功提交、重启核对指纹、相同历史无需重新摘要 |
-| `Memory/atomic-curation-and-scope` | 超容量整批不写、同一批次腾空间后新增、用户与目标文件隔离 |
-
-Hermes 的分层压缩与长期记忆原理见 [Context Compression and Caching](https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching) 和 [Persistent Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)。本实现保留核心思想，没有复制上游多平台会话 hygiene、供应商真实 token usage、缓存策略、全部恢复与插件引擎语义，也不兼容上游配置格式。
+本机 mock 验证覆盖提示词预算、工具配对、重复压缩、辅助模型回退、失败保留、冷却、取消、长工具循环、HTTP 错误分类和重启恢复。未包含 Hermes 的多模态清理、原生服务端 compaction、后台预摘要、流式进度超时、分布式租约或自动 token 窗口探测。真实模型摘要的质量需要另行评估，不能由协议测试证明。

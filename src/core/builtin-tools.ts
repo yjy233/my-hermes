@@ -2,6 +2,7 @@ import type { LongTermMemory, SessionStore } from '../memory/index.js';
 import type { MemoryOperation, MemoryStoreTarget } from '../memory/long-term.js';
 import type { SkillCatalog } from '../skills/catalog.js';
 import type { Algorithms } from '../learning/types.js';
+import type { MemoryHit } from '../memory/store.js';
 import { ToolRegistry, type JsonSchema } from './tools.js';
 
 /** 轻量算术表达式解析器，限制复杂度和数值范围，不执行 eval 或 new Function。 */
@@ -53,7 +54,7 @@ export function objectSchema(properties: Record<string, JsonSchema>): JsonSchema
   return { type: 'object', properties, required: Object.keys(properties), additionalProperties: false };
 }
 export function buildRegistry(memory: LongTermMemory, store: SessionStore, skills: SkillCatalog,
-  scope: string, algorithms: Algorithms): ToolRegistry {
+  scope: string, algorithms: Algorithms, liveHistory?: () => MemoryHit[]): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register({ name: 'calculator', description: 'Compute bounded arithmetic, e.g. (2+3)*4.',
     parameters: objectSchema({ expression: { type: 'string', maxLength: 200 } }),
@@ -85,7 +86,12 @@ export function buildRegistry(memory: LongTermMemory, store: SessionStore, skill
   });
   registry.register({ name: 'history_search', description: 'Search previous sessions for the same user only.',
     parameters: objectSchema({ query: { type: 'string', maxLength: 300 } }),
-    handler: args => algorithms.selectMemories(args.query as string, store.search(args.query as string, scope, 20), 5) });
+    handler: args => {
+      const query = args.query as string;
+      const needle = query.trim().toLowerCase();
+      const live = needle ? (liveHistory?.() ?? []).filter(hit => hit.content.toLowerCase().includes(needle)).toReversed() : [];
+      return algorithms.selectMemories(query, [...live, ...store.search(query, scope, 20)], 5);
+    } });
   registry.register({ name: 'skill_read', description: 'Read the full body of a named skill in the skill index.',
     parameters: objectSchema({ name: { type: 'string', maxLength: 64 } }),
     handler: args => skills.read(args.name as string) });

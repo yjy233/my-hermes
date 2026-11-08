@@ -11,6 +11,8 @@ export interface Message {
   toolCallId?: string;
   /** 保留思考模型工具调用所需的协议元数据，不作为最终答复展示。 */
   reasoningContent?: string;
+  /** 仅由本地压缩器设置；不作为额外字段发送给模型。 */
+  contextSummary?: { body: string; hasUserTurn: boolean; originalContent?: string };
 }
 export interface ModelResponse { content: string; toolCalls?: ToolCall[]; reasoningContent?: string; }
 export interface ToolSchema {
@@ -116,3 +118,39 @@ export function fromWireMessage(value: unknown): Message {
 }
 
 export function messageSize(message: Message): number { return JSON.stringify(toWireMessage(message)).length; }
+export function requestSize(messages: Message[], tools: ToolSchema[]): number {
+  return messages.reduce((total, message) => total + messageSize(message), 0) + JSON.stringify(tools).length;
+}
+
+/**
+ * 确认摘要覆盖边界没有拆开 assistant 工具声明与结果。
+ * 这里只验证配对结构，不检查正文；不同轮次可以复用 ID，同一组不能重复。
+ * 指纹只能证明内容一致，不能证明 coveredCount 落在合法的协议边界。
+ */
+export function assertToolBoundary(messages: Message[], cut: number): void {
+  if (!Number.isSafeInteger(cut) || cut < 1 || cut > messages.length) {
+    throw new Error('Tool boundary cut must be a positive safe integer within history');
+  }
+  const pending = new Set<string>();
+  for (let index = 0; index < cut; index++) {
+    const message = messages[index];
+    if (message.role === 'tool') {
+      if (!message.toolCallId || !pending.delete(message.toolCallId)) {
+        throw new Error('Tool boundary contains an orphan or duplicate result');
+      }
+      continue;
+    }
+    if (pending.size) throw new Error('Tool boundary contains missing tool results');
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls ?? []) {
+        if (!call || typeof call.id !== 'string' || !call.id || pending.has(call.id)) {
+          throw new Error('Tool boundary contains invalid or duplicate call IDs');
+        }
+        pending.add(call.id);
+      }
+    }
+  }
+  if (pending.size || messages[cut]?.role === 'tool') {
+    throw new Error('Tool boundary splits an assistant call and its results');
+  }
+}

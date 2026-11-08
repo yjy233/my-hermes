@@ -11,7 +11,7 @@
 | [05 Gateway](05-gateway.md) | 事件协议、连接器、授权、重试和锁恢复 |
 | [06 调试](06-debugging.md) | npm 命令、配置、Node Inspector、模型接入与排查 |
 | [07 Kimi Provider](07-kimi-provider.md) | L0 模型连接练习、官方协议、离线验收与真实调用 |
-| [08 高级上下文压缩](08-context-compression.md) | 工具输出清理、结构化摘要、持久检查点、压缩前长期记忆整理 |
+| [08 上下文压缩](08-context-compression.md) | 异步 L2、摘要回退、冷却、溢出恢复、持久化与长期记忆整理 |
 
 ![架构总览](images/architecture.png)
 

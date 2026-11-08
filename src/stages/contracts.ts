@@ -1,11 +1,12 @@
 /** 具名验收契约直接运行所选算法，不回退到参考实现。 */
 import assert from 'node:assert/strict';
 import { calculate } from '../core/builtin-tools.js';
-import { ContextBudgetExceeded, ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
-import { messageSize, type Emit, type Message, type ModelResponse, type Provider } from '../core/models.js';
+import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
+import { type Emit, type Message, type ModelResponse, type Provider } from '../core/models.js';
 import { ToolRegistry } from '../core/tools.js';
 import type { Algorithms } from '../learning/types.js';
-import type { MemoryHit } from '../memory/store.js';
+import { SessionStore, type MemoryHit } from '../memory/store.js';
+import { compressionCases } from './compression.js';
 
 export interface StageCase {
   name: string;
@@ -36,10 +37,6 @@ function successfulTrace(): Message[] {
     { role: 'tool', content: '{"ok":true,"result":4}', toolCallId: 'call-1' },
     { role: 'assistant', content: '4' },
   ];
-}
-
-function size(messages: Message[]): number {
-  return messages.reduce((sum, message) => sum + messageSize(message), 0);
 }
 
 function coreCases(algorithms: Algorithms, emit: Emit): StageCase[] {
@@ -161,37 +158,9 @@ function coreCases(algorithms: Algorithms, emit: Emit): StageCase[] {
   ];
 }
 
-function memoryCases(algorithms: Algorithms): StageCase[] {
+function memoryCases(algorithms: Algorithms, emit: Emit): StageCase[] {
   return [
-    { name: 'L2/exact-budget-whole-tool-turn', run() {
-      const identity = structuredClone(system);
-      const latest = successfulTrace();
-      const input: Message[] = [identity, { role: 'user', content: 'old question' },
-        { role: 'assistant', content: 'x'.repeat(1000) }, ...latest];
-      const original = structuredClone(input), expected = structuredClone([identity, ...latest]);
-      assert.deepEqual(algorithms.compactHistory(input, size(expected)), expected);
-      assert.deepEqual(input, original, 'Context selection cannot mutate full persisted history');
-    } },
-    { name: 'L2/system-only-and-overflow', run() {
-      const identity = structuredClone(system), original = structuredClone(identity);
-      assert.deepEqual(algorithms.compactHistory([identity], messageSize(identity)), [original]);
-      assert.throws(() => algorithms.compactHistory([identity], messageSize(original) - 1), ContextBudgetExceeded);
-    } },
-    { name: 'L2/latest-turn-overflow', run() {
-      const input = [structuredClone(system), ...successfulTrace()];
-      assert.throws(() => algorithms.compactHistory(input, size(input) - 1), ContextBudgetExceeded);
-    } },
-    { name: 'L2/contiguous-immutable-suffix', run() {
-      const identity = structuredClone(system);
-      const oldest: Message = { role: 'user', content: 'old small turn' };
-      const middle: Message = { role: 'user', content: 'x'.repeat(1000) };
-      const newest: Message = { role: 'user', content: 'new small turn' };
-      const input = [identity, oldest, middle, newest], original = structuredClone(input);
-      const expected = structuredClone([identity, newest]);
-      assert.deepEqual(algorithms.compactHistory(input, size([identity, oldest, newest])), expected,
-        'Keep a contiguous suffix rather than skipping a large middle turn');
-      assert.deepEqual(input, original);
-    } },
+    ...compressionCases(algorithms.compactHistory, emit),
     { name: 'L3/stable-relevance-without-mutation', run() {
       const hits: MemoryHit[] = [
         { sessionId: 'unrelated', content: 'gardening', score: 1 },
@@ -208,6 +177,45 @@ function memoryCases(algorithms: Algorithms): StageCase[] {
       assert.deepEqual(algorithms.selectMemories('TypeScript', hits, 0), []);
       assert.deepEqual(algorithms.selectMemories('TypeScript', hits, -1), []);
       assert.deepEqual(algorithms.selectMemories('TypeScript', [], 5), []);
+    } },
+    { name: 'L3/distinct-mixed-language-terms', run() {
+      const hits: MemoryHit[] = [
+        { sessionId: 'chinese', content: '记忆保存在本地', score: 1 },
+        { sessionId: 'english', content: 'TypeScript TYPESCRIPT TypeScript', score: 99 },
+        { sessionId: 'both', content: '用 typescript 实现记忆', score: 0 },
+      ];
+      const original = structuredClone(hits);
+      assert.deepEqual(algorithms.selectMemories('TypeScript typescript 记忆', hits, 10)
+        .map(hit => hit.sessionId), ['both', 'chinese', 'english']);
+      assert.deepEqual(hits, original);
+      assert.deepEqual(algorithms.selectMemories('不存在的词', hits, 2), hits.slice(0, 2), 'No relevance ties keep candidate order');
+    } },
+    { name: 'L3/empty-query-literal-symbols-and-invalid-limit', run() {
+      const hits: MemoryHit[] = [
+        { sessionId: 'plain', content: 'plain text', score: 1 },
+        { sessionId: 'symbol', content: '100%', score: 1 },
+      ];
+      assert.deepEqual(algorithms.selectMemories(' \n\t ', hits, 3), []);
+      assert.equal(algorithms.selectMemories('%', hits, 1)[0]?.sessionId, 'symbol');
+      for (const limit of [NaN, Infinity, -Infinity, 1.5]) {
+        assert.throws(() => algorithms.selectMemories('plain', hits, limit), RangeError);
+      }
+    } },
+    { name: 'L3/scoped-cross-session-originals', run() {
+      const store = new SessionStore(':memory:');
+      try {
+        const scope = JSON.stringify(['lab', 'alice']);
+        const first = store.getOrCreate('first-room', scope);
+        const second = store.getOrCreate('second-room', scope);
+        const otherUser = store.getOrCreate('bob-room', JSON.stringify(['lab', 'bob']));
+        const otherChannel = store.getOrCreate('other-channel', JSON.stringify(['other', 'alice']));
+        for (const session of [first, second, otherUser, otherChannel]) {
+          store.appendMessages(session.id, [{ role: 'user', content: `归档编号：${session.key}` }]);
+        }
+        const hits = algorithms.selectMemories('归档编号', store.search('归档编号', scope, 20), 5);
+        assert.deepEqual(hits.map(hit => hit.sessionId), [second.id, first.id]);
+        assert.deepEqual(algorithms.selectMemories('missing', store.search('missing', scope), 5), []);
+      } finally { store.close(); }
     } },
   ];
 }
@@ -284,7 +292,7 @@ function evolutionCases(algorithms: Algorithms): StageCase[] {
 export function algorithmCases(stage: number, algorithms: Algorithms, emit: Emit = noop): StageCase[] {
   switch (stage) {
     case 1: return coreCases(algorithms, emit);
-    case 2: return memoryCases(algorithms);
+    case 2: return memoryCases(algorithms, emit);
     case 3: return routingCases(algorithms);
     case 4: return [];
     case 5: return evolutionCases(algorithms);

@@ -28,6 +28,43 @@ for (const stage of [3, 5]) test(`stage ${stage} learner TODO is a named failure
   assert.ok(result.cases.every(item => item.name));
 });
 
+test('learner memory stage passes both compression and recall contracts', async () => {
+  const result = await checkStage(2, 'learner');
+  assert.equal(result.status, 'passed', JSON.stringify(result.cases));
+  const compression = result.cases.filter(item => item.name.startsWith('L2/'));
+  assert.equal(compression.length, 10);
+  assert.ok(compression.every(item => item.status === 'passed'), JSON.stringify(compression));
+});
+
+test('stage 2 rejects an unfinished L2 instead of falling back to the reference compressor', async () => {
+  const result = await checkStage(2, 'learner', {}, {
+    ...loadAlgorithms('reference'),
+    async compactHistory() { throw new ExerciseNotImplemented('L2 injected unfinished algorithm'); },
+  });
+  const cases = result.cases.filter(item => item.name.startsWith('L2/'));
+  assert.equal(cases.length, 10);
+  assert.ok(cases.every(item => item.status === 'failed'));
+  assert.ok(cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
+});
+
+test('stage 2 rejects a no-op L2 that silently skips summarization', async () => {
+  const result = await checkStage(2, 'learner', {}, {
+    ...loadAlgorithms('reference'), async compactHistory(messages) { return { messages, changed: false }; },
+  });
+  assert.equal(result.cases.find(item => item.name === 'L2/structured-summary-prompt-and-immutability')?.status, 'failed');
+  assert.equal(result.cases.find(item => item.name === 'L2/auxiliary-fallback-once')?.status, 'failed');
+});
+
+test('stage 2 reports an unfinished L3 without silently selecting reference memories', async () => {
+  const result = await checkStage(2, 'learner', {}, {
+    ...loadAlgorithms('learner'),
+    selectMemories() { throw new ExerciseNotImplemented('L3 injected unfinished algorithm'); },
+  });
+  const cases = result.cases.filter(item => item.name.startsWith('L3/'));
+  assert.ok(cases.length > 0);
+  assert.ok(cases.every(item => item.status === 'failed' && item.error?.name === 'ExerciseNotImplemented'));
+});
+
 test('completed learner loop passes all nine Core contracts independently of the remaining exercises', async () => {
   const result = await checkStage(1, 'learner');
   assert.equal(result.status, 'passed', JSON.stringify(result.cases));
@@ -36,10 +73,11 @@ test('completed learner loop passes all nine Core contracts independently of the
   assert.equal(result.failed, 0);
 });
 
-test('completed learner memory algorithms and advanced engine pass all eleven contracts independently of routing and reflection', async () => {
+test('completed learner memory stage preserves both Hermes and checkpoint engine contracts', async () => {
   const result = await checkStage(2, 'learner');
   assert.equal(result.status, 'passed', JSON.stringify(result.cases));
-  assert.equal(result.total, 11);
+  assert.ok(result.cases.some(item => item.name === 'Context/checkpoint-restart'));
+  assert.ok(result.cases.some(item => item.name === 'L2/auxiliary-fallback-once'));
   assert.equal(result.passed, result.total);
   assert.equal(result.failed, 0);
 });

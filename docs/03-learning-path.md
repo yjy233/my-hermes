@@ -1,6 +1,6 @@
 # 分阶段学习与实现
 
-读完 [架构](01-architecture.md)，先阅读已完成的 Kimi 连接 L0 和 `src/learning/exercises.ts` 中带中文注释的 L1 runLoop、L2 上下文裁剪与 L3 召回排序，再实现 L4/L5。这些主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
+读完 [架构](01-architecture.md)，先阅读已完成的 Kimi 连接 L0 和 `src/learning/exercises.ts` 中带中文注释的 L1 runLoop、L2 compactHistory、L3 selectMemories，再实现 L4/L5。已完成的主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
 
 ```sh
 npm install
@@ -9,7 +9,7 @@ npm run check -- --all --mode reference
 npm run dev -- check --stage 0 --mode learner
 ```
 
-以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`；阶段 1、2 的 learner 也应通过。L4/L5 未实现时明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
+以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`；阶段 1/2 的 learner 也应通过。L4/L5 未实现时明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
 
 `check/demo` 的 mode 优先级为命令行 `--mode` → 所选 profile 的 `config.json` → 默认 `reference`。profile 由 `--home` 或 `MY_HERMES_HOME` 选择。检查只读取配置，运行数据放临时目录，不初始化日常 profile，不调用其真实模型，也不加载其插件。
 
@@ -19,7 +19,7 @@ npm run dev -- check --stage 0 --mode learner
 | --- | --- | --- | --- | --- |
 | 0 Kimi Provider | 已实现，阅读与回归 | `src/core/providers/kimi.ts`、`src/core/models.ts` | mock HTTP 请求、文本/工具/推理字段往返、错误与取消 | `check --stage 0 --mode learner` |
 | 1 Core | L1 已实现，阅读 / 调试 / 对照 | `src/learning/exercises.ts`、`src/core/tools.ts` | 最终文本、工具结果与 ID 配对、循环预算及非法响应处理 | `check --stage 1 --mode learner` |
-| 2 Memory | L2/L3 已实现，阅读 / 调试 / 对照 | `src/learning/exercises.ts`、`src/memory/store.ts` | 完整轮次预算、不修改输入、稳定排序与条数限制、记忆隔离 | `check --stage 2 --mode learner` |
+| 2 Memory | L2 异步 `compactHistory`、L3 `selectMemories` | `src/learning/exercises.ts`、`src/core/compression/`、`src/memory/store.ts` | 结构化摘要、工具配对、回退/冷却/取消、不修改输入、召回排序与隔离 | `check --stage 2 --mode learner` |
 | 3 Gateway | L4 `sessionKey` | `src/learning/exercises.ts`、`src/gateway/router.ts` | 三维路由稳定无碰撞、同事件只执行一次、用户隔离 | `check --stage 3 --mode learner` |
 | 4 Extensions | 无必填算法；扩展自己的实例 | `src/skills/catalog.ts`、`src/plugins/manager.ts` | 内置 Skill 按需读取、测试插件注册/执行与扩展边界 | `check --stage 4 --mode learner` |
 | 5 Evolution | L5 `reflect` | `src/learning/exercises.ts`、`src/evolution/manager.ts` | 成功轨迹生成候选，纯聊天/失败/未完成轨迹不生成，批准后才可发现 | `check --stage 5 --mode learner` |
@@ -52,9 +52,9 @@ npm 默认还会显示脚本启动信息；需要机器逐行解析 JSON 时，�
 npm run dev -- check --all --mode learner
 ```
 
-即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`：阶段 0～2 是已完成主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
+即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`：阶段 0/1/2 是已完成主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
 
-L0～L3 已完成，但完整 `chat --mode learner` 仍需补齐 L4 路由；`/recall` 调用已实现的 L3，`--auto-reflect` 才调用仍待实现的 L5。辅助反思失败不会撤销已保存答复。可用 `--mode reference` 运行完整系统，下一步独立实现阶段 3 的 L4。
+L1～L3 已完成，但完整 `chat --mode learner` 仍需补齐 L4；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；召回失败会形成工具错误供模型处理。可用 `--mode reference` 运行完整系统，下一步独立实现阶段 3 的 L4。
 
 ## 阶段 0：Kimi 模型连接（L0）
 
@@ -89,7 +89,7 @@ runLoop(provider, registry, messages, maxSteps, emit, signal?): Promise<Message[
 npm run dev -- check --stage 1 --mode learner --trace
 ```
 
-当前阶段 1 的 9 个具名回归均应通过；可以在 text/tool 共存、context/delta 更新、结果 ID 配对和取消检查处设置断点。L1 通过后继续阅读和验收下面已实现的 L2/L3，不代表完整 learner 聊天已经可用。
+当前阶段 1 的 9 个具名回归均应通过；可以在 text/tool 共存、context/delta 更新、结果 ID 配对和取消检查处设置断点。L1 通过后阅读 L2/L3，再实现 L4；阶段 1/2 通过不代表完整 learner 聊天已经可用。
 
 离线验收 `/calc (2+3)*4` 应产生 calculator 调用、`{"ok":true,"result":20}` 的工具返回，再得到最终文本。主动测试未知工具、非法表达式、超时、重复 ID、模型持续请求工具等情况。Registry 会把普通工具失败包装为 `ok: false`，让模型观察错误后继续决策；取消应保留取消语义。
 
@@ -97,36 +97,37 @@ npm run dev -- check --stage 1 --mode learner --trace
 
 ## 阶段 2：短期上下文与长期记忆（L2/L3）
 
-`compactHistory` 与 `selectMemories` 已实现，并附详细中文注释。先读 `src/memory/store.ts`、`src/memory/long-term.ts` 与 `src/core/builtin-tools.ts`，区分完整历史和下一次模型可见上下文，再单步对照两种 mode 的行为。
+L2 `compactHistory` 和 L3 `selectMemories` 已完成，阶段 2 应全部通过。L2 的 learner 与 reference 都直接实现异步压缩主流程，运行时不会绕过所选版本。先在 `exercises.ts` 的 L2 设置断点，再进入 `core/compression` 的辅助方法。
 
-L2 `compactHistory(messages, maxChars)`：
+L2 `compactHistory(messages, tools, runtime, signal?, force?)` 返回 `Promise<CompressionResult>`：
 
-- 保留首条 system，按 user 边界组成完整轮次，优先保留连续的最近轮次。
-- 使用 `core/models.ts` 的 `messageSize` 计算序列化字符长度，不能只计算正文；这不是模型 tokenizer 的真实 token 计数。Core 在请求前另外计入工具 schema。
-- 不拆散 assistant 调用与 tool 返回，不删除数据库原始记录，不修改输入数组。
-- 预算必须为正；system 自身或 system 加最新轮仍超预算时抛 `ContextBudgetExceeded`。
+- 结合消息与工具 schema 大小，检查软阈值、冷却和无进展退避；force 用于远端确认溢出后的有界恢复。
+- 先清理旧工具输出，再按完整工具组保护头尾、选择摘要中段和预算。
+- 组装旧摘要、冻结记忆、中段轨迹、当前请求重点，异步请求模型生成结构化摘要。
+- 根据失败类别保留完整历史或生成本地兜底；取消原样传播，不转成降级摘要。
+- 重组摘要与近期消息，补回 Skill 重读标记；提交前验证预算和实际缩减。不修改原始输入或数据库历史。
 
-这是基础模式（`--compression basic`）的同步策略：进入 runLoop 前裁剪一次，循环内只检查硬预算，旧信息不会自动变成摘要。
+`CompressionRuntime` 提供模型请求、辅助模型回退、超时、冷却状态和提交校验。`window.ts` 负责分区与工具配对，`text.ts` 负责 prompt 和摘要重组。旧同步裁剪已移至 `core/compression/trim.ts` 的 `trimHistory`，仅在关闭语义压缩时使用。旧的 `(messages, maxChars)` L2 调用需要迁移到新的异步接口。
 
-默认高级模式（`--compression advanced`）使用独立异步 `ContextEngine`，在每次模型请求前检查含工具 schema 的预算，包括工具循环中途。它清理旧工具输出、保护当前用户和近期工具组、生成并增量更新结构化摘要，成功后保存持久检查点；压缩前可用受限记忆工具整理长期事实。L2 的同步接口仍保留，便于先掌握预算与工具配对，再调试高级引擎。完整设计见 [高级上下文压缩](08-context-compression.md)。
+默认 `--compression advanced` 只使用这条异步 L2 主链路；`--compression basic` 用于观察同步裁剪的差异。需要生成摘要时，可先通过只开放 `memory` 工具的辅助流程保存长期事实，最多两次模型请求以支持容量错误后的整理重试。不要把长期记忆文件、原始历史和压缩工作上下文当成同一份数据。
+
+阶段验收由 `src/stages/compression.ts` 直接调用选定算法，覆盖阈值、prompt、工具清理、当前任务保留、重复摘要、失败冷却、辅助回退、取消、兜底与受保护区域。摘要请求使用离线 stub，不受 L3/L4 是否完成影响。完整细节见 [上下文压缩](08-context-compression.md)。
 
 L3 `selectMemories(query, hits, limit)`：
 
 - hits 已由存储层按 scope 隔离，本函数只排序，不重新越权查询。
 - 返回最多 limit 条，不修改输入；等分保持原始顺序，非正 limit 返回空数组。
-- 按查询中的唯一词项计算内容匹配数，查询 `TypeScript` 时，`TypeScript tooling` 应排在无关内容前；空查询保留输入顺序。这是词项排序，不是向量检索；中文切词、时间衰减或去重可作为后续扩展。
+- 大小写不敏感，按不同查询词项的命中数排序；重复查询词或正文重复词不额外加分。中文连续文字按子串匹配，不做自动分词。
+- 空查询返回空数组，limit 必须是安全整数。无相关性差异时保留候选顺序，不修改存储层 score。
+- `history_search` 从同 scope 的所有 session 查询原始 SQLite 消息，再执行 L3；压缩不删除原文。具体存储格式、检索范围和字面查询限制见 [记忆文档](04-memory-and-extensions.md#磁盘存储与历史召回)。
 
-```sh
-npm run dev -- check --stage 2 --mode learner --trace --debug
-```
+阶段检查覆盖上下文分组、排序与记忆隔离。在 `SessionStore.appendMessages` 和 `Agent` 请求模型处设置断点，确认 SQLite 仍保存完整历史。修改长期记忆后，用新会话检查提示快照，详见 [记忆与扩展](04-memory-and-extensions.md)。
 
-阶段 2 的 11 个具名 case 既验收基础 L2/L3，也检查高级压缩与记忆能力。基础断点可放在 user 轮次分组、从后向前预算选择和同分排序处；高级断点放在引擎的预算判定、工具组分界、摘要返回和检查点提交处。验证摘要失败或取消不提交检查点，原始历史仍可检索。
-
-阶段检查覆盖上下文分组、排序与记忆隔离。在 `SessionStore.commitTurn` 和 `Agent` 请求模型处设置断点，确认 SQLite 仍保存完整历史。修改长期记忆后，用新会话检查提示快照；使用 memory 工具的 add/patch/remove 批次，观察合并旧条目后再添加新信息的容量管理，详见 [记忆与扩展](04-memory-and-extensions.md)。
+长期记忆的进阶断点放在 `LongTermMemory.manage` 和 `flushLongTermMemory`：检查同一批 `add/patch/remove` 是否只按最终容量提交、错误是否保留原文件，以及旧会话快照和新会话快照是否符合预期。
 
 ## 阶段 3：Gateway 路由（L4）
 
-这是当前下一步练习：实现 `sessionKey(channel, conversationId, userId)`。必须包含三个维度，结果稳定且非空。不要直接用冒号连接：`["a:b","c","d"]` 与 `["a","b:c","d"]` 容易碰撞。可用无歧义 JSON 序列化，再做稳定哈希。
+实现 `sessionKey(channel, conversationId, userId)`。必须包含三个维度，结果稳定且非空。不要直接用冒号连接：`["a:b","c","d"]` 与 `["a","b:c","d"]` 容易碰撞。可用无歧义 JSON 序列化，再做稳定哈希。
 
 验收会并发发送同一事件两次，要求 Agent 只执行一次；同房间不同用户必须得到不同会话。去重和持久缓存由 Gateway 基础设施实现，不需要写在 L4。
 
@@ -181,6 +182,6 @@ npm run check -- --all --mode learner
 npm run build
 ```
 
-`npm test` 覆盖基础设施、参考实现和已实现学习算法的回归；`check --mode learner` 独立验收各学习阶段的具名契约。两者应分别运行，不能用测试套件通过代替 learner 检查。完成练习后还应补充自己的边界案例，并跑通 learner 对话、记忆召回、两种连接器和候选审核闭环。
+`npm test` 覆盖基础设施、参考实现及已完成学习算法的回归；`check --mode learner` 独立验收学习者算法的具名契约。两者应分别运行，不能用测试套件通过代替 learner 检查。完成练习后还应补充自己的边界案例，并跑通 learner 对话、记忆召回、两种连接器和候选审核闭环。
 
 中断或超时不能回滚已发生的外部副作用；忽略 signal 的插件工作还可能继续。框架会传播取消并避免将其写成成功缓存，调试失败与重试时仍需检查实际结果，详见 [Gateway 边界](05-gateway.md)。
