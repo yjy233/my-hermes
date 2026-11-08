@@ -2,7 +2,7 @@
 
 一个以 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 为主要参考的 TypeScript Agent 学习项目：外围框架可运行，核心算法留给学习者，完整参考实现可随时观察和对照。
 
-包含 **Core、Gateway、连接器、短长期记忆、Skills、Plugin、自进化候选与审核**。需要 **Node.js 24+**；运行时仅用内置模块。Kimi Provider 已完整实现，Demo 与阶段验收可离线运行。
+包含 **Core、Gateway、连接器、短长期记忆、Skills、Plugin、自进化候选与审核**。高级上下文压缩支持工具输出清理、结构化摘要、持久检查点和压缩前长期记忆整理。需要 **Node.js 24+**；运行时仅用内置模块。Kimi Provider 已完整实现，Demo 与阶段验收可离线运行。
 
 ![项目架构](docs/images/architecture.png)
 
@@ -23,7 +23,7 @@ npm run kimi:test
 npm run kimi:chat
 ```
 
-测试要求只回复“Kimi 连接成功”，聊天脚本使用已经完成的 Kimi 主实现与参考 Core，不要求先补齐 L2～L5。模型、地址和超时配置在本地 `.hermes-lab/config.json`，示例见 [kimi.json](examples/config/kimi.json)；已有配置不被覆盖。CLI 自动读当前目录 `.env`，支持 --env-path，shell 环境优先。完整说明见 [Kimi 文档](docs/07-kimi-provider.md)。本次只完成离线协议验证，尚未使用你的密钥在线联调。
+测试要求只回复“Kimi 连接成功”，聊天脚本使用已经完成的 Kimi 主实现与参考 Core，不要求先补齐 L4/L5。模型、地址和超时配置在本地 `.hermes-lab/config.json`，示例见 [kimi.json](examples/config/kimi.json)；已有配置不被覆盖。CLI 自动读当前目录 `.env`，支持 --env-path，shell 环境优先。完整说明见 [Kimi 文档](docs/07-kimi-provider.md)。本次只完成离线协议验证，尚未使用你的密钥在线联调。
 
 ## 离线观察框架
 
@@ -44,18 +44,18 @@ npm run build
 - Core 的 `--mode reference/learner` 选择完整算法或 [exercises.ts](src/learning/exercises.ts) 中的 L1～L5。
 - Kimi 的 `--provider-mode learner/reference` 独立选择 [kimi.ts](src/core/providers/kimi.ts) 中已完成的主实现或对照版；主实现不会回退到参考版。
 
-基础设施、Kimi 连接和 L1 runLoop 已实现，可阅读中文注释、调试并与参考版对照。**L2～L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
+基础设施、Kimi 连接、L1 runLoop、L2 上下文裁剪与 L3 召回排序已实现，可阅读中文注释、调试并与参考版对照。**L4/L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
 
 | 阶段 | 学习内容 | 当前状态 / 学习任务 | 独立验收 |
 | --- | --- | --- | --- |
 | 0 | Kimi：真实模型请求、工具与推理字段 | 已实现，阅读与协议回归 | `npm run kimi:check` |
 | 1 | Core：模型、工具、观察、终止 | L1 已实现，阅读 / 调试 / 对照 | `npm run dev -- check --stage 1 --mode learner` |
-| 2 | 短期上下文、长期记忆、历史召回 | L2 `compactHistory`、L3 `selectMemories` | `npm run dev -- check --stage 2 --mode learner` |
+| 2 | 短期上下文、长期记忆、历史召回 | L2/L3 已实现，阅读 / 调试 / 对照 | `npm run dev -- check --stage 2 --mode learner` |
 | 3 | Gateway：授权、隔离、幂等 | L4 `sessionKey` | `npm run dev -- check --stage 3 --mode learner` |
 | 4 | Skills 与可信 Plugin | 添加自己的 Skill / Tool Plugin | `npm run dev -- check --stage 4 --mode learner` |
 | 5 | 自进化：成功轨迹到技能候选 | L5 `reflect` | `npm run dev -- check --stage 5 --mode learner` |
 
-`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。L1 已完成，完整 learner 聊天仍需补齐 L2/L4，召回使用 L3，反思使用 L5；下一步可独立实现阶段 2 的上下文与召回。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
+`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。阶段 2 用 11 个具名 case 验收基础 L2/L3 和高级记忆能力；完整 learner 聊天仍需补齐 L4 路由，反思使用 L5。下一步可独立实现阶段 3 的 `sessionKey`。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
 
 每阶段先看参考，再调试自己的代码；将阶段数字换成 0～5：
 
@@ -65,7 +65,7 @@ npm run dev -- check --stage 0 --mode learner --trace --debug
 npm run dev -- check --all --mode learner
 ```
 
-结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；L2～L5 未完成时状态为 `[passed, passed, failed, failed, passed, failed]`，不会回退到答案。阶段 0/1 是已完成主实现，阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
+结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`，不会回退到答案。阶段 0～2 是已完成主实现，阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
 
 调试 TypeScript：
 
@@ -86,7 +86,9 @@ npm run dev -- chat --provider demo --mode reference --message '/skill study-not
 npm run dev -- chat --provider demo --mode reference --plugin ./examples/plugins/word-count.ts
 ```
 
-长期记忆是按用户隔离的 `MEMORY.md` / `USER.md`，每文件默认 4000 字符，超限报错。`/remember` 是整篇替换演示；已有会话的系统提示保持快照，新会话读取更新后的记忆。短期上下文保留最近完整轮次；SQLite 保存成功轮次的完整消息与工具调用。本版采用子串召回与整轮裁剪，Hermes 的全文检索和模型摘要见 [参考映射](docs/02-hermes-reference.md)。
+长期记忆是按用户隔离的 `MEMORY.md` / `USER.md`，每文件默认 4000 字符。新增 `memory` 工具支持 add/patch/remove 批次，超容量时由模型合并后重试，不静默丢条目；`/remember` 仍是整篇替换演示。已有会话的系统提示保持快照，新会话读取更新后的记忆。
+
+默认使用高级 `ContextEngine`：每次模型请求前计算含工具 schema 的字符预算，清理旧工具输出、保护近期工具组、生成并增量更新结构化摘要；压缩前可用受限记忆工具保存长期事实。摘要检查点和成功轮次在 SQLite 中原子提交，原始历史始终保留。L3 对 scope 内候选做稳定词项排序。使用 `--compression basic` 可回到同步 L2 的整轮裁剪；默认 `--compression advanced` 不改变 L2 练习接口。实现细节、配置和边界见 [高级上下文压缩](docs/08-context-compression.md)。
 
 Skill 只提前注入名称/描述，正文通过工具按需读取。Plugin 是显式信任的 TypeScript / JavaScript 模块，导出 `register(context)` 注册工具与 Hook。离线 Demo 不自动选择任意插件工具；阶段 4 直接验收插件调用，真实模型可根据 schema 选择。插件不是沙箱，源文件修改后需重启进程。
 

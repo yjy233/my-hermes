@@ -375,16 +375,35 @@ test('reflection rejects orphaned and incomplete tool observations', () => {
   assert.equal(reflect([trace[0], trace[1], toolReply('{"ok":true}', 'wrong-id'), trace[3]]), null);
 });
 
-test('learner mode runs completed L1 while remaining exercises still reject without a fallback', async () => {
+test('learner mode runs completed L1 through L3 while routing and reflection remain explicit TODOs', async () => {
   const learner = loadAlgorithms('learner');
   const completed = await learner.runLoop(scripted([{ content: 'learner works' }]),
     new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
   assert.deepEqual(completed, [{ role: 'assistant', content: 'learner works' }]);
-  assert.throws(() => learner.compactHistory([{ role: 'system', content: 'x' }], 1000),
-    error => error instanceof ExerciseNotImplemented && /L2/.test(error.message));
-  assert.throws(() => learner.selectMemories('query', [], 1), /L3/);
-  assert.throws(() => learner.sessionKey('a', 'b', 'c'), /L4/);
-  assert.throws(() => learner.reflect([]), /L5/);
+  const referenceAlgorithms = loadAlgorithms('reference');
+  assert.notEqual(learner.compactHistory, referenceAlgorithms.compactHistory);
+  assert.notEqual(learner.selectMemories, referenceAlgorithms.selectMemories);
+  const system: Message = { role: 'system', content: 'fixed learner identity' };
+  const latest = successfulTrace();
+  const history: Message[] = [system, { role: 'user', content: 'old question' },
+    { role: 'assistant', content: 'x'.repeat(1000) }, ...latest];
+  const originalHistory = structuredClone(history);
+  const budget = [system, ...latest].reduce((total, message) => total + messageSize(message), 0);
+  assert.deepEqual(learner.compactHistory(history, budget), [system, ...latest]);
+  assert.deepEqual(history, originalHistory);
+  const hits = [
+    { sessionId: 'unrelated', content: 'gardening', score: 1 },
+    { sessionId: 'first', content: 'TypeScript tooling', score: 1 },
+    { sessionId: 'second', content: 'TypeScript tooling again', score: 1 },
+  ];
+  const originalHits = structuredClone(hits);
+  assert.deepEqual(learner.selectMemories('TYPESCRIPT', hits, 2).map(hit => hit.sessionId), ['first', 'second']);
+  assert.deepEqual(learner.selectMemories('TYPESCRIPT', hits, 0), []);
+  assert.deepEqual(hits, originalHits);
+  assert.throws(() => learner.sessionKey('a', 'b', 'c'),
+    error => error instanceof ExerciseNotImplemented && /L4/.test(error.message));
+  assert.throws(() => learner.reflect([]),
+    error => error instanceof ExerciseNotImplemented && /L5/.test(error.message));
   const reference = await loadAlgorithms('reference').runLoop(scripted([{ content: 'reference works' }]),
     new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
   assert.equal(reference[0].content, 'reference works');

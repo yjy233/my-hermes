@@ -1,6 +1,6 @@
 # Kimi Provider：配置、运行与协议回归
 
-`src/core/providers/kimi.ts` 的 `KimiProvider.complete` 已完整实现，可直接用于真实 API。它独立处理 HTTP 请求、响应、工具调用、推理字段、超时和取消，不以调用 kimi-reference.ts 代替实现。参考版仍保留，供阅读和协议对照；L1～L5 的 Agent 算法练习继续保留。
+`src/core/providers/kimi.ts` 的 `KimiProvider.complete` 已完整实现，可直接用于真实 API。它独立处理 HTTP 请求、响应、工具调用、推理字段、超时和取消，不以调用 kimi-reference.ts 代替实现。参考版仍保留，供阅读和协议对照；Agent 的 L1～L3 已实现，L4/L5 继续保留为练习。
 
 ## 填入 API key 后测试
 
@@ -22,7 +22,7 @@ npm run kimi:test
 npm run kimi:chat
 ```
 
-kimi:test 发出一次真实请求，要求只回复“Kimi 连接成功”；kimi:chat 开始真实交互。两个脚本都选择 Kimi 主实现和参考 Core，直接可用，不要求先补齐 L1～L5。本次仓库验证只使用离线与 mock 协议，没有代你调用在线 Kimi。
+kimi:test 发出一次真实请求，要求只回复“Kimi 连接成功”；kimi:chat 开始真实交互。两个脚本都选择 Kimi 主实现和参考 Core，直接可用，不要求先补齐 L4/L5。本次仓库验证只使用离线与 mock 协议，没有代你调用在线 Kimi。
 
 CLI 默认读取运行目录下的 `.env`，也可指定文件：
 
@@ -40,7 +40,7 @@ npm run dev -- doctor --provider kimi --env-path ./.env.local
 | --- | --- |
 | provider: kimi | 使用 Kimi 连接器 |
 | providerMode: learner | 使用 kimi.ts 中已经完成的主实现；reference 选择独立对照版 |
-| mode: reference | 使用完整 Agent 算法，L2～L5 未完成也可聊天 |
+| mode: reference | 使用完整 Agent 算法，L4/L5 未完成也可聊天 |
 | model: kimi-k3.1-pro | 本项目验证过协议的模型基线 |
 | baseUrl | 国内 https://api.moonshot.cn/v1；国际 https://api.moonshot.ai/v1 |
 | providerTimeoutMs | 单次模型请求超时，通用默认 30000 ms，Kimi 示例使用 60000 ms |
@@ -94,4 +94,4 @@ npm run dev -- chat --provider kimi --provider-mode learner --mode reference \
   --message '请使用计算工具计算 (2+3)*4，并核对结果' --trace
 ```
 
-L2～L5 尚未实现时使用 --mode reference；完成后可切 learner 测试自己的 Agent。在线结果还取决于账户权限、网络与服务响应，离线协议通过不能替代你填入真实 key 后的在线联调。
+L4 路由尚未实现时，完整聊天使用 --mode reference；完成 L4 后可切 learner 测试自己的 Agent，自动反思还需完成 L5。在线结果还取决于账户权限、网络与服务响应，离线协议通过不能替代你填入真实 key 后的在线联调。

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { initializeProfile, loadSettings, type SettingsOverrides } from '../src/config.js';
 
 function fixture(t: TestContext): string {
@@ -33,4 +35,95 @@ test('unknown keys, malformed JSON and non-object configs fail clearly', t => {
   writeFileSync(path, '{"unrecognized":true}'); assert.throws(() => loadSettings(home), /Unknown config key/);
   writeFileSync(path, '[]'); assert.throws(() => loadSettings(home), /must contain an object/);
   writeFileSync(path, 'broken'); assert.throws(() => loadSettings(home), SyntaxError);
+});
+
+test('旧配置补齐高级压缩默认值，初始化不覆盖用户已有配置', t => {
+  const home = fixture(t), source = '{"mode":"reference","provider":"demo"}';
+  writeFileSync(join(home, 'config.json'), source);
+  const settings = loadSettings(home);
+  assert.equal(settings.compressionEnabled, true);
+  assert.equal(settings.compressionThreshold, 0.75);
+  assert.equal(settings.compressionTargetRatio, 0.5);
+  assert.equal(settings.compressionSummaryChars, 3000);
+  assert.equal(settings.compressionTailMessages, 8);
+  assert.equal(settings.compressionToolChars, 1200);
+  assert.equal(settings.compressionTimeoutMs, 20_000);
+  assert.equal(settings.compressionMemoryFlush, true);
+  initializeProfile(settings);
+  assert.equal(readFileSync(join(home, 'config.json'), 'utf8'), source);
+});
+
+test('高级压缩配置拒绝非法类型、无效预算和不低于触发线的目标比例', t => {
+  const home = fixture(t);
+  const invalid: Record<string, unknown[]> = {
+    compressionEnabled: [0, 'true', null],
+    compressionMemoryFlush: [1, 'false', null],
+    compressionThreshold: [0, -1, 1.01, NaN, Infinity, '0.75'],
+    compressionTargetRatio: [0, -1, 0.75, 1, NaN, Infinity, '0.5'],
+    compressionSummaryChars: [0, 255, 16_001, 256.5, NaN, Infinity],
+    compressionTailMessages: [0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1],
+    compressionToolChars: [79, -1, 80.5, Infinity, Number.MAX_SAFE_INTEGER + 1],
+    compressionTimeoutMs: [0, -1, NaN, Infinity, 2 ** 32, '20000'],
+  };
+  for (const [name, values] of Object.entries(invalid)) {
+    for (const value of values) {
+      assert.throws(() => loadSettings(home, { [name]: value } as SettingsOverrides),
+        new RegExp(name), `${name} 不应接受 ${String(value)}`);
+    }
+  }
+  assert.throws(() => loadSettings(home, { compressionThreshold: 0.4, compressionTargetRatio: 0.4 }),
+    /compressionTargetRatio/);
+});
+
+test('高级压缩接受有效边界，显式关闭仍保留其余配置', t => {
+  const settings = loadSettings(fixture(t), {
+    compressionEnabled: false, compressionMemoryFlush: false,
+    compressionThreshold: 1, compressionTargetRatio: 0.99,
+    compressionSummaryChars: 256, compressionTailMessages: 1,
+    compressionToolChars: 80, compressionTimeoutMs: 2_147_483_647,
+  });
+  assert.equal(settings.compressionEnabled, false);
+  assert.equal(settings.compressionMemoryFlush, false);
+  assert.equal(settings.compressionThreshold, 1);
+  assert.equal(settings.compressionSummaryChars, 256);
+  assert.equal(settings.compressionToolChars, 80);
+  assert.equal(settings.compressionTailMessages, 1);
+  assert.equal(settings.compressionTimeoutMs, 2_147_483_647);
+  assert.equal(loadSettings(fixture(t), { compressionSummaryChars: 16_000 }).compressionSummaryChars, 16_000);
+});
+
+test('高级压缩示例可直接通过配置校验且不包含密钥', t => {
+  const source = readFileSync(new URL('../examples/config/context.json', import.meta.url), 'utf8');
+  const home = fixture(t);
+  writeFileSync(join(home, 'config.json'), source);
+  const settings = loadSettings(home);
+  assert.equal(settings.compressionEnabled, true);
+  assert.equal(settings.contextChars, 48_000);
+  assert.equal(settings.provider, 'demo');
+  assert.equal(/api.?key|secret|token/iu.test(source), false);
+});
+
+test('CLI 压缩模式覆盖仅影响当前进程，doctor 可检查配置且不调用模型', t => {
+  const root = fixture(t), home = join(root, 'profile');
+  const environment: NodeJS.ProcessEnv = { ...process.env, MY_HERMES_HOME: home };
+  // 在临时工作目录运行，不加载仓库里的实际 .env，也不继承真实凭证。
+  for (const name of ['MOONSHOT_API_KEY', 'KIMI_API_KEY', 'MY_HERMES_API_KEY', 'OPENAI_API_KEY']) {
+    delete environment[name];
+  }
+  const invoke = (mode: string) => spawnSync(process.execPath, [
+    '--import', import.meta.resolve('tsx'), fileURLToPath(new URL('../src/cli.ts', import.meta.url)),
+    'doctor', '--compression', mode,
+  ], { cwd: root, env: environment, encoding: 'utf8', timeout: 15_000 });
+  const basic = invoke('basic');
+  assert.equal(basic.status, 0, basic.stderr);
+  assert.equal(JSON.parse(basic.stdout).compression.enabled, false);
+  const saved = readFileSync(join(home, 'config.json'), 'utf8');
+  assert.equal(JSON.parse(saved).compressionEnabled, true, '本次覆盖不改变初始化默认值');
+  const advanced = invoke('advanced');
+  assert.equal(advanced.status, 0, advanced.stderr);
+  assert.equal(JSON.parse(advanced.stdout).compression.enabled, true);
+  assert.equal(readFileSync(join(home, 'config.json'), 'utf8'), saved);
+  const invalid = invoke('unknown');
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /compression must be basic or advanced/);
 });

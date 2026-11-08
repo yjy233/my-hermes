@@ -7,11 +7,17 @@ import type { LongTermMemory, SessionStore } from '../memory/index.js';
 import type { SkillCatalog } from '../skills/catalog.js';
 import { PluginManager } from '../plugins/manager.js';
 import type { EvolutionManager } from '../evolution/manager.js';
+import { ContextEngine, resolveCompressionOptions, type CompressionOptions } from './context-engine.js';
+import { flushLongTermMemory } from './memory-flush.js';
 
 export interface AgentOptions {
   provider: Provider; store: SessionStore; memory: LongTermMemory; skills: SkillCatalog;
   mode?: Mode; maxSteps?: number; contextChars?: number; turnTimeoutMs?: number;
   plugins?: string[]; evolution?: EvolutionManager; autoReflect?: boolean; emit?: Emit;
+  /** 高级模式在每次请求前生成摘要视图；enabled:false 保留 L2 的整轮裁剪练习。 */
+  compression?: CompressionOptions;
+  /** 可选的辅助摘要/记忆整理模型；未提供时复用主 Provider。 */
+  summaryProvider?: Provider;
 }
 
 export class Agent {
@@ -20,11 +26,13 @@ export class Agent {
   private readonly maxSteps: number;
   private readonly contextChars: number;
   private readonly turnTimeoutMs: number;
+  private readonly compression: Required<CompressionOptions>;
   constructor(private readonly options: AgentOptions) {
     this.algorithms = loadAlgorithms(options.mode ?? 'reference');
     this.maxSteps = options.maxSteps ?? 8;
     this.contextChars = options.contextChars ?? 24_000;
     this.turnTimeoutMs = options.turnTimeoutMs ?? 120_000;
+    this.compression = resolveCompressionOptions(options.compression);
     if (!Number.isSafeInteger(this.maxSteps) || this.maxSteps < 1 ||
         !Number.isSafeInteger(this.contextChars) || this.contextChars < 1000 ||
         !Number.isFinite(this.turnTimeoutMs) || this.turnTimeoutMs <= 0 || this.turnTimeoutMs > 2_147_483_647) {
@@ -50,9 +58,8 @@ export class Agent {
       store.setSystemPrompt(session.id, prompt);
     }
     const user: Message = { role: 'user', content: text };
-    const context = this.algorithms.compactHistory([
-      { role: 'system', content: prompt }, ...store.loadMessages(session.id), user,
-    ], this.contextChars);
+    // 原始历史与请求视图分开：高级引擎必须看到完整历史，才能校验检查点指纹和增量摘要。
+    const original: Message[] = [{ role: 'system', content: prompt }, ...store.loadMessages(session.id), user];
     const registry = buildRegistry(memory, store, skills, scope, this.algorithms);
     const plugins = new PluginManager(registry);
     await abortable(plugins.load(this.options.plugins ?? []), signal);
@@ -65,11 +72,24 @@ export class Agent {
       }
     };
     emit('turn.start', {});
-    const delta = await abortable(this.algorithms.runLoop(new BudgetProvider(this.options.provider, this.contextChars),
+    // 基础模式也要给实际启用的工具 schema 留空间，不能裁到消息预算刚好满后再必然超限。
+    const messageBudget = this.contextChars - JSON.stringify(registry.schemas()).length;
+    if (messageBudget < 1) throw new ContextBudgetExceeded('Tool schemas exceed the context budget');
+    const context = this.compression.enabled ? original : this.algorithms.compactHistory(original, messageBudget);
+    const budgetProvider = new BudgetProvider(this.options.provider, this.contextChars);
+    const auxiliary = this.options.summaryProvider ?? this.options.provider;
+    const engine = this.compression.enabled ? new ContextEngine(budgetProvider, this.contextChars, this.compression, {
+      checkpoint: store.loadCheckpoint(session.id), summaryProvider: auxiliary, emit,
+      flushMemory: (source, flushSignal) => flushLongTermMemory(auxiliary, registry, memory, scope,
+        source, this.contextChars, emit, flushSignal),
+    }) : undefined;
+    // 包在 Provider 边界，不改写 L1 的 context/delta：工具循环每一步都能处理上下文压力。
+    const delta = await abortable(this.algorithms.runLoop(engine ?? budgetProvider,
       registry, context, this.maxSteps, emit, signal), signal);
     signal.throwIfAborted();
     validateTurn(delta);
-    store.appendMessages(session.id, [user, ...delta]);
+    // 摘要和原始成功轨迹在一个 SQLite 事务中提交，取消/失败轮次不会留下半截检查点。
+    store.commitTurn(session.id, [user, ...delta], engine?.checkpointDraft());
     emit('turn.persisted', { newMessages: delta.length + 1 });
     if (this.options.autoReflect && this.options.evolution) {
       try {

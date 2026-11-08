@@ -15,6 +15,7 @@ import { LongTermMemory, SessionStore } from './memory/index.js';
 import { PluginManager } from './plugins/index.js';
 import { SkillCatalog } from './skills/index.js';
 import { algorithmCases } from './stages/contracts.js';
+import { compressionCases } from './stages/compression.js';
 import { extensionCases } from './stages/extensions.js';
 import { providerCases } from './stages/provider.js';
 import { runStageCases, type StageResult, type StageRunOptions } from './stages/runner.js';
@@ -42,7 +43,8 @@ export async function checkStage(stage: number, mode: Mode = 'reference', option
     4: 'Skill 渐进读取与 Plugin 工具调用', 5: '候选审核与 Skill 提升闭环',
   }[stage]!;
   const result = await runStageCases(stage, mode, [
-    ...algorithmCases(stage, algorithms, emit), ...(stage === 4 ? extensionCases() : []), {
+    ...algorithmCases(stage, algorithms, emit), ...(stage === 2 ? compressionCases(emit) : []),
+    ...(stage === 4 ? extensionCases() : []), {
     name: scenarioName,
     run: async signal => {
       details = await runScenario(stage, algorithms, (event, payload) => emit(event, {

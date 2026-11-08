@@ -3,6 +3,7 @@ import { withTimeout } from './async.js';
 import { ProviderError } from './errors.js';
 import { fromWireMessage, isRecord, toWireMessage, validateModelResponse,
   type Message, type ModelResponse, type Provider, type ToolSchema } from './models.js';
+import { MEMORY_FLUSH_TASK, SUMMARY_SECTIONS, SUMMARY_TASK } from './context-engine.js';
 
 /** 确定性的离线模拟器，用于稳定复现模型响应与工具调用流程。 */
 export class DemoProvider implements Provider {
@@ -10,6 +11,14 @@ export class DemoProvider implements Provider {
     signal?.throwIfAborted();
     const last = messages.at(-1);
     if (!last) throw new Error('No messages');
+    // 离线演示只生成摘录，便于稳定验收压缩控制流；真实语义质量需要 Kimi 等模型验证。
+    if (messages[0]?.content.startsWith(SUMMARY_TASK)) {
+      const limit = Number(messages[0].content.match(/最多 (\d+) 字符/u)?.[1] ?? 1000);
+      const input = JSON.parse(last.content) as { previousSummary: string; records: string[] };
+      const sample = input.records.join('\n').slice(0, Math.max(20, Math.floor((limit - 150) / 3)));
+      return { content: SUMMARY_SECTIONS.map((section, index) => `## ${section}\n${index === 0 ? sample : '离线摘录；请检索原始历史核对。'}`).join('\n').slice(0, limit) };
+    }
+    if (messages[0]?.content.startsWith(MEMORY_FLUSH_TASK)) return { content: '离线演示不自动推断新的长期事实。' };
     if (last.role === 'tool') {
       const results: string[] = [];
       for (let i = messages.length - 1; i >= 0 && messages[i].role === 'tool'; i--) results.unshift(messages[i].content);

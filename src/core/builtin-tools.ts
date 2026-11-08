@@ -1,4 +1,5 @@
 import type { LongTermMemory, SessionStore } from '../memory/index.js';
+import type { MemoryOperation, MemoryStoreTarget } from '../memory/long-term.js';
 import type { SkillCatalog } from '../skills/catalog.js';
 import type { Algorithms } from '../learning/types.js';
 import { ToolRegistry, type JsonSchema } from './tools.js';
@@ -66,6 +67,22 @@ export function buildRegistry(memory: LongTermMemory, store: SessionStore, skill
       memory.write(scope, args.target as string, args.content as string);
       return `Updated ${args.target}; a new session receives the updated prompt snapshot.`;
     } });
+  // 长期记忆按条目管理；同一目标的一批操作只提交一次，容量不足时可整理后重试。
+  // schema 子集不支持 oneOf，因此 action 对应的必需字段由 manage 再做精确校验。
+  registry.register({ name: 'memory',
+    description: 'Curate lasting facts (memory) or preferences (user). Batch add(content), patch(old_text,content), remove(old_text). At capacity consolidate then retry one batch. Never store credentials, raw logs, or temporary state.',
+    parameters: objectSchema({
+      target: { type: 'string', enum: ['memory', 'user'] },
+      operations: { type: 'array', maxItems: 32, items: {
+        type: 'object', properties: {
+          action: { type: 'string', enum: ['add', 'patch', 'remove'] },
+          content: { type: 'string', maxLength: memory.maxChars },
+          old_text: { type: 'string', maxLength: memory.maxChars },
+        }, required: ['action'], additionalProperties: false,
+      } },
+    }),
+    handler: args => memory.manage(scope, args.target as MemoryStoreTarget, args.operations as MemoryOperation[]),
+  });
   registry.register({ name: 'history_search', description: 'Search previous sessions for the same user only.',
     parameters: objectSchema({ query: { type: 'string', maxLength: 300 } }),
     handler: args => algorithms.selectMemories(args.query as string, store.search(args.query as string, scope, 20), 5) });

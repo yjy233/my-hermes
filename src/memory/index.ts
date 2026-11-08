@@ -1,4 +1,4 @@
-export { SessionStore } from './store.js';
-export type { Session, SessionRecord, MemoryHit } from './store.js';
-export { LongTermMemory } from './long-term.js';
-export type { MemoryTarget } from './long-term.js';
+export { SessionStore, hashContextPrefix } from './store.js';
+export type { Session, SessionRecord, MemoryHit, ContextCheckpoint, ContextCheckpointDraft } from './store.js';
+export { LongTermMemory, MemoryOperationError } from './long-term.js';
+export type { MemoryTarget, MemoryStoreTarget, MemoryOperation, MemoryUsage, MemoryManagementResult } from './long-term.js';

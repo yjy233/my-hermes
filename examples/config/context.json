@@ -1,0 +1,13 @@
+{
+  "mode": "reference",
+  "provider": "demo",
+  "contextChars": 48000,
+  "compressionEnabled": true,
+  "compressionThreshold": 0.75,
+  "compressionTargetRatio": 0.5,
+  "compressionSummaryChars": 3000,
+  "compressionTailMessages": 8,
+  "compressionToolChars": 1200,
+  "compressionTimeoutMs": 20000,
+  "compressionMemoryFlush": true
+}

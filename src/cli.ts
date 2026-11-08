@@ -24,6 +24,7 @@ function parse(argv: string[]) {
     home: { type: 'string' }, mode: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' },
     'provider-mode': { type: 'string' },
     'env-path': { type: 'string' },
+    compression: { type: 'string' },
     'base-url': { type: 'string' }, plugin: { type: 'string', multiple: true },
     'auto-reflect': { type: 'boolean' }, 'no-auto-reflect': { type: 'boolean' },
     trace: { type: 'boolean' }, debug: { type: 'boolean' },
@@ -44,18 +45,23 @@ Commands:
   skills list | skills read NAME
   evolve list | evolve show ID | evolve approve ID --name NAME --description TEXT
 Common: --home PATH --mode MODE --provider demo|compatible|kimi --provider-mode learner|reference
-        --model NAME --base-url URL --env-path PATH
+        --model NAME --base-url URL --env-path PATH --compression basic|advanced
         --plugin PATH (repeatable) --auto-reflect --no-auto-reflect --trace --debug
 Examples: npm run dev -- chat --message '/calc (2+3)*4' --trace
           npm run check -- --all --mode reference`;
 
 function settingsFor(values: Parsed['values']): Settings {
   if (values['auto-reflect'] && values['no-auto-reflect']) throw new Error('Choose one auto-reflect flag');
+  if (values.compression !== undefined && !['basic', 'advanced'].includes(values.compression)) {
+    throw new Error('compression must be basic or advanced');
+  }
   const settings = loadSettings(values.home, {
     mode: values.mode as Mode | undefined, provider: values.provider as Settings['provider'] | undefined,
     providerMode: values['provider-mode'] as Mode | undefined,
     model: values.model, baseUrl: values['base-url'],
     autoReflect: values['auto-reflect'] ? true : values['no-auto-reflect'] ? false : undefined,
+    // 命令行覆盖只影响本次进程；不改写已有 profile 配置。
+    compressionEnabled: values.compression === undefined ? undefined : values.compression === 'advanced',
   });
   settings.plugins.push(...(values.plugin ?? []).map(path => resolve(path)));
   return settings;
@@ -175,6 +181,10 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     if (command === 'doctor') {
       print({ node: process.versions.node, home: settings.home, mode: settings.mode, provider: settings.provider,
         providerMode: settings.providerMode,
+        compression: { enabled: settings.compressionEnabled, threshold: settings.compressionThreshold,
+          targetRatio: settings.compressionTargetRatio, summaryChars: settings.compressionSummaryChars,
+          tailMessages: settings.compressionTailMessages, toolChars: settings.compressionToolChars,
+          timeoutMs: settings.compressionTimeoutMs, memoryFlush: settings.compressionMemoryFlush },
         apiKeyConfigured: settings.provider === 'kimi'
           ? Boolean(process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY)
           : Boolean(process.env.MY_HERMES_API_KEY || process.env.OPENAI_API_KEY),
@@ -190,6 +200,10 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     const agent = new Agent({ provider, store, memory: new LongTermMemory(resolve(settings.home, 'memory')),
       skills: catalogFor(settings), mode: settings.mode, maxSteps: settings.maxSteps, contextChars: settings.contextChars,
       turnTimeoutMs: settings.turnTimeoutMs, plugins: settings.plugins, autoReflect: settings.autoReflect,
+      compression: { enabled: settings.compressionEnabled, threshold: settings.compressionThreshold,
+        targetRatio: settings.compressionTargetRatio, summaryChars: settings.compressionSummaryChars,
+        tailMessages: settings.compressionTailMessages, toolChars: settings.compressionToolChars,
+        timeoutMs: settings.compressionTimeoutMs, memoryFlush: settings.compressionMemoryFlush },
       evolution: new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills')),
       emit: values.trace ? traceWriter(settings.home) : undefined });
     gateway = new Gateway(agent, store, loadAlgorithms(settings.mode).sessionKey,

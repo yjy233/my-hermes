@@ -1,4 +1,6 @@
 export { Agent, BudgetProvider, validateTurn, type AgentOptions } from './core/agent.js';
+export { ContextEngine, contextSize, DEFAULT_COMPRESSION, resolveCompressionOptions,
+  type CompressionOptions } from './core/context-engine.js';
 export * from './core/models.js';
 export * from './core/errors.js';
 export { ToolRegistry, type Tool, type ToolContext, type JsonSchema } from './core/tools.js';

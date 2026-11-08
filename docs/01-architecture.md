@@ -10,7 +10,8 @@ flowchart TB
     JSONL[JSONL connector] --> GW
     HTTP[Local HTTP connector + bearer token] --> GW
     GW --> CORE[Core Agent: prompt + bounded tool loop]
-    CORE --> MODEL[Provider: demo / Kimi / compatible API]
+    CORE --> CTX[Context Engine: budget + prune + summary]
+    CTX --> MODEL[Provider: demo / Kimi / compatible API]
     CORE --> TOOLS[Tool Registry: schemas + limits + errors]
     CORE --> MEM[Memory: Markdown + SQLite sessions]
     CORE --> SK[Skills: index then on-demand read]
@@ -31,6 +32,7 @@ flowchart TB
 - Core 的 reference/learner 选择 L1～L5；Kimi Provider 独立提供 L0 练习与参考实现，通过 --provider-mode 选择，默认 learner。未完成会明确报错，绝不暗中回退。阶段检查的 --mode 选择当前阶段的学习实现。
 - 同一会话串行，不同会话可并发；路由包含 channel、conversation、user。稳定 event ID 用于已完成消息去重。
 - SQLite 保存成功轮次的完整消息和工具配对；裁剪只改变下一次模型上下文，不覆盖历史。数据库通过 Node 内置 `node:sqlite` 访问，未引入外部数据库包。
+- 默认高级 ContextEngine 包装 Provider，每次请求前清理旧工具输出并按需生成增量摘要，构造派生请求视图；原始轨迹和冻结 system 不改写。摘要检查点与成功轮次原子提交，失败不静默丢历史。`--compression basic` 保留同步 L2 的整轮裁剪，详见 [高级上下文压缩](08-context-compression.md)。
 - 按用户 scope 隔离有界 `MEMORY.md` 与 `USER.md`；新会话构建冻结快照，写入后通过工具可读到即时值，新会话才更新系统提示。
 - Skills 只提前加载名称/描述，正文按需读。新会话刷新索引，使长驻 Gateway 能发现刚批准的 Skill；已有会话保留原快照。
 - Plugin 只加载显式指定入口，统一注册工具和观察 Hook，拒绝覆盖已有工具。Node 动态 import 缓存模块，修改插件后需重启。
@@ -48,8 +50,9 @@ flowchart TB
 | 接口 | 契约 |
 | --- | --- |
 | `Provider.complete(messages, tools, signal?)` | 返回 `Promise<ModelResponse>`；支持取消与统一响应校验 |
+| `ContextEngine` | 包装 Provider；`prepare` 构造压缩请求视图，`checkpointDraft` 返回待成功提交的摘要 |
 | `ToolRegistry.schemas()` / `execute(call, signal?)` | 返回工具 schema / `Promise<Message>`；验参、限时、结构化错误 |
-| `SessionStore(path)` | `getOrCreate`、`setSystemPrompt`、`loadMessages`、`appendMessages`、`search`、`listSessions`、`close` |
+| `SessionStore(path)` | `getOrCreate`、`setSystemPrompt`、`loadMessages`、`appendMessages`、`commitTurn`、`loadCheckpoint`、`search`、`listSessions`、`close` |
 | `LongTermMemory(root, maxChars = 4000)` | `snapshot(scope)`、`read(scope, target)`、`write(scope, target, content)`；target 只允许两个记忆文件 |
 | `SkillCatalog(roots)` | `discover()`、`index()`、`read(name)` |
 | `PluginManager(registry)` | `await load(paths)`；context 提供 `registerTool` 和 `on`；`emit` 观察事件 |
@@ -61,9 +64,9 @@ L0 是 `src/core/providers/kimi.ts` 的 complete；其余学习接口在 `src/le
 ## 数据流与故障
 
 1. 连接器检查并归一化输入，Gateway 检查用户、event ID 与会话路由。
-2. Agent 恢复完整历史和系统提示，读取记忆、技能索引，按预算选择上下文。
-3. Provider 返回文本或工具调用；Registry 校验、执行、包装结果，循环直到最终文本或预算耗尽。
-4. 成功轮次一次性追加到 SQLite；可选反思只生成待审核候选，其失败不撤销已保存答复。
+2. Agent 恢复完整历史、冻结系统提示和可验证摘要检查点；高级 ContextEngine 按预算准备请求视图。
+3. Provider 返回文本或工具调用；Registry 校验、执行、包装结果，每次再次请求仍经过上下文引擎，直到最终文本或预算耗尽。
+4. 成功轮次与新摘要检查点一次性提交到 SQLite；可选反思只生成待审核候选，其失败不撤销已保存答复。
 5. Gateway 写入已完成回复，重复事件返回同一文本；冲突或失败以错误返回。
 
 每个 profile 同时只由一个 chat/gateway 运行实例拥有。`.runtime.lock/owner.json` 记录 PID 和随机 token；正常退出核对所有权后释放目录，异常退出留下目录，由用户确认旧进程已停止后手动恢复。锁不自动回收陈旧 PID，也不提供分布式租约。

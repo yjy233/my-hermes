@@ -2,6 +2,8 @@
 
 本项目以 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 为主要学习参考，使用 TypeScript 与 Node.js 24+ 独立实现教学框架，不宣称与 Hermes 的配置、插件或运行时协议兼容。OpenClaw 只作为同类产品背景，本轮没有移植其实现。
 
+实现演进：本文保留最初的参考研究与教学起点说明。同步 L2 的整轮裁剪现作为 basic 模式保留；当前默认 advanced 模式已增加工具输出清理、异步结构化摘要、持久检查点与压缩前长期记忆整理，设计和边界见 [高级上下文压缩](08-context-compression.md)。
+
 研究日期：2026-10-25。GitHub API 查询到的参考提交为 [`4ea8d23cc9f527332ccb1d55359b27741b6ea51b`](https://github.com/NousResearch/hermes-agent/commit/4ea8d23cc9f527332ccb1d55359b27741b6ea51b)，提交时间 `2026-10-25T02:56:21Z`。以下源码链接固定到该提交；在线文档可能继续更新，分析结论以本次阅读为准。
 
 ## 模块对应

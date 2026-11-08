@@ -21,7 +21,7 @@ for (const stage of [0, 1, 2, 3, 4, 5]) test(`stage ${stage} reference has named
   assert.equal(events.filter(event => event === 'case.passed').length, result.total);
 });
 
-for (const stage of [2, 3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
+for (const stage of [3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
   const result = await checkStage(stage, 'learner');
   assert.equal(result.status, 'failed');
   assert.ok(result.cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
@@ -32,6 +32,14 @@ test('completed learner loop passes all nine Core contracts independently of the
   const result = await checkStage(1, 'learner');
   assert.equal(result.status, 'passed', JSON.stringify(result.cases));
   assert.equal(result.total, 9);
+  assert.equal(result.passed, result.total);
+  assert.equal(result.failed, 0);
+});
+
+test('completed learner memory algorithms and advanced engine pass all eleven contracts independently of routing and reflection', async () => {
+  const result = await checkStage(2, 'learner');
+  assert.equal(result.status, 'passed', JSON.stringify(result.cases));
+  assert.equal(result.total, 11);
   assert.equal(result.passed, result.total);
   assert.equal(result.failed, 0);
 });
@@ -103,7 +111,7 @@ test('CLI --all reports all learner stages, emits trace on stderr and leaves the
     assert.equal(child.status, 1, child.stderr);
     const reports = child.stdout.trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(reports.map(item => item.stage), [0, 1, 2, 3, 4, 5]);
-    assert.deepEqual(reports.map(item => item.status), ['passed', 'passed', 'failed', 'failed', 'passed', 'failed']);
+    assert.deepEqual(reports.map(item => item.status), ['passed', 'passed', 'passed', 'failed', 'passed', 'failed']);
     assert.match(child.stderr, /case\.start/); assert.match(child.stderr, /case\.failed/);
     assert.match(child.stderr, /L0/); assert.match(child.stderr, /L1/); assert.match(child.stderr, /L2/);
     assert.match(child.stderr, /L3/); assert.match(child.stderr, /L4/); assert.match(child.stderr, /L5/);

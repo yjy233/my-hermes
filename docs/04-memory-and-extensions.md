@@ -2,13 +2,21 @@
 
 ## 记忆的三个层次
 
-- 短期上下文由 `compactHistory` 决定，只影响下一次模型请求，不删改原始记录。
+- 短期上下文默认由异步 `ContextEngine` 管理，按预算清理旧工具输出并生成结构化摘要；基础模式由 L2 `compactHistory` 整轮裁剪。两者只影响模型请求，不删改原始记录。
 - 会话历史由 `node:sqlite` 存在 profile 的 `sessions.db` 中；成功轮次完整保留 assistant/tool 调用关系。检索是按 scope 过滤的 SQLite LIKE 子串匹配，`%`、`_` 按普通字符处理，未实现上游 FTS5 或向量检索。
 - 长期记忆位于 `memory/<sha256(scope)>/MEMORY.md` 和 `USER.md`；每文件默认 4000 字符，临时文件写入后原子替换。超限报错，不静默截断，人工编辑同样受读取预算检查。
 
 scope 由入口生成，模型不能替换。Gateway 使用 `[channel,userId]` 的规范 JSON，同渠道同用户跨会话共享长期记忆，不同渠道或用户隔离。`SessionStore.getOrCreate` 拒绝把已有 session key 迁移到另一个 scope。
 
-`SessionStore` 提供 `getOrCreate`、`setSystemPrompt`、`loadMessages`、`appendMessages`、`search`、`listSessions`、`close`。系统提示在新会话第一次运行时固定；记忆写入后，工具读取可见实时值，新会话才读取新快照。Node 24 的 `node:sqlite` 可能发出实验性 API 警告。
+`SessionStore` 提供 `getOrCreate`、`setSystemPrompt`、`loadMessages`、`appendMessages`、`commitTurn`、`loadCheckpoint`、`search`、`listSessions`、`close`。高级模式的摘要检查点保存覆盖范围、原始消息前缀指纹和代际，与成功轮次通过 `commitTurn` 原子提交；它是派生视图，不替代原始历史。系统提示在新会话第一次运行时固定；记忆写入后，工具读取可见实时值，新会话才读取新快照。Node 24 的 `node:sqlite` 可能发出实验性 API 警告。
+
+## 长期记忆的条目管理
+
+`memory` 工具使用 target `memory` / `user`，在一个目标文件内执行 add/patch/remove 操作批次。条目以 `§` 分隔，重复 add 不制造副本；patch 需要唯一的 old_text，替换该片段并保留条目其他内容；remove 删除唯一匹配的条目。所有操作先在内存应用，最终结果通过容量检查后一次原子写入，定位歧义、找不到条目或超限都会拒绝整批。
+
+容量满时，模型应在同一批次里缩短或删除过时条目，再添加新事实；框架不自动删除旧记忆。兼容的 `memory_read` / `memory_write` 仍可用，Demo 的 `/remember` 保留整篇替换演示。
+
+高级上下文压缩前可运行受限 memory flush，只开放记忆工具、最多两次模型请求，将适合跨会话的事实和偏好整理进长期文件。当前任务的摘要仍单独放在 SQLite，不自动灌进长期记忆。工具写入立即落盘；后续任务失败或取消不能保证回滚已完成写入。流程、配置与失败策略见 [高级上下文压缩](08-context-compression.md)。
 
 ## Skill 渐进加载
 
@@ -53,7 +61,7 @@ Plugin 拥有当前 Node 进程权限，这些注册接口不是沙箱。同步�
 
 ## 调试建议
 
-1. 在 `SessionStore.appendMessages` 检查调用 ID 与结果配对。
+1. 在 `SessionStore.commitTurn` 检查调用 ID、原始历史和摘要检查点一起提交。
 2. 修改 USER.md，对比旧会话和新会话的系统提示。
 3. 在 `SkillCatalog.read` 确认正文按需载入。
 4. 让插件重复注册工具，观察初始化直接报错。
