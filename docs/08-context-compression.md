@@ -99,6 +99,8 @@ HTTP 错误正文最多读取 8192 字节用于分类；错误和 trace 只包�
 
 重启后按原始消息水位恢复工作上下文，不重复总结全部历史。旧数据库自动创建新表，无需手工迁移。外部追加消息导致水位不匹配时回到完整历史。`history` 命令读取已提交的原始记录；`history_search` 还合并当前轮已执行工具的原文，排除检索工具自己的结果。即使工具输出已在本轮中被清理或摘要、尚未提交 SQLite，模型也能立即按原文关键词找回。临时候选只属于当前轮绑定的 scope，不把失败轮次提前写成成功历史。
 
+已提交原文由 FTS5 词索引、trigram 子串索引和字面 LIKE 回退召回，L3 负责候选去重与排序。持久命中带稳定 `messageId`；模型可继续用 `history_read` 读取该消息周边窗口，按 before/after ID 游标翻页，或按 `content_offset` 续读长正文。当前轮 live 原文尚无持久消息 ID。搜索和读取只缩短工具返回的正文预览，保留结构化定位与分页信息；数据库原文不变。调用链、BM25 与离线断点见 [L3 历史检索教程](11-l3-history-retrieval.md)。
+
 可选的 `ContextEngine` 库模式使用独立的 `summary_checkpoints` 表，保存 `generation`、`coveredCount`、前缀 SHA256 与结构化摘要；`loadCheckpoint` / `commitTurn` 保留这套接口，摘要与成功原始轮次原子提交。它不使用默认链路的消息水位与冷却状态表。旧的本地数据库若曾用 `context_checkpoints` 保存这一格式，会自动迁移到独立表，原始消息不改写。两张检查点表都是原始历史的派生数据，不能混用格式。
 
 ## 配置与验证
@@ -134,10 +136,11 @@ npm run dev -- chat --provider demo --mode reference --compression basic --trace
 
 主配置采用上面的 `compression` 对象。此前本地版本的 `compressionEnabled`、`compressionThreshold`、`compressionSummaryChars`、`compressionTailMessages`、`compressionTimeoutMs` 等平铺字段仍可读取并映射到相应主配置；同一字段同时出现时，显式嵌套配置优先，命令行覆盖本次运行。`compressionTargetRatio` / `compressionToolChars` 保留给检查点库模式，不改变默认 L2 的 Hermes 风格分区策略。配置示例见 [context.json](../examples/config/context.json)。
 
-`compression.enabled: false` 或 `--compression basic` 时使用 `core/compression/trim.ts` 的 `trimHistory` 辅助策略。L2 本身是异步语义压缩，learner 与 reference 都已有独立主流程，L3 召回排序也已实现；L4/L5 继续保留为练习。`check --stage 2 --mode learner` 可独立验收压缩、记忆整理和召回，不要求先完成路由与反思。
+`compression.enabled: false` 或 `--compression basic` 时使用 `core/compression/trim.ts` 的 `trimHistory` 辅助策略。L2 本身是异步语义压缩，learner 与 reference 都已有独立主流程，L3 的 FTS 候选、词项/live/同源 BM25 排序和原文窗口读取也已实现；L4/L5 继续保留为练习。`check --stage 2 --mode learner` 可独立运行 26 项压缩、记忆整理和历史检索验收，不要求先完成路由与反思。
 
 ```sh
 node --import tsx --test tests/compression.test.ts tests/compression-http.test.ts
+npm run learn:recall
 npm run dev -- check --stage 2 --mode learner --trace --debug
 npm run verify
 ```

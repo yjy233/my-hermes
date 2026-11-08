@@ -1,6 +1,6 @@
 # Hermes 与本项目的记忆存储参考
 
-本文是 [记忆系统详解](09-memory-system-guide.md) 的存储附录，回答“哪些内容放文件、哪些内容放数据库、到底有多少表和索引”。概念与执行时机先读主文；默认上下文压缩的实现细节见 [上下文压缩与长期记忆整理](08-context-compression.md)。
+本文是 [记忆系统详解](09-memory-system-guide.md) 的存储附录，回答“哪些内容放文件、哪些内容放数据库、到底有多少表和索引”。概念与执行时机先读主文；默认上下文压缩的实现细节见 [上下文压缩与长期记忆整理](08-context-compression.md)。本项目部分已更新为 L3 进阶实现，操作和断点教程见 [11 L3 历史检索](11-l3-history-retrieval.md)。Hermes 部分仍绑定下面的固定上游提交。
 
 ![Hermes 记忆存储结构：长期文件、业务表与全文索引](images/memory/04-hermes-storage-map.png)
 
@@ -168,14 +168,18 @@ Gateway 的 [delivery ledger](https://github.com/NousResearch/hermes-agent/blob/
 
 ## 6. 我们项目的数据库结构
 
-**当前项目还没有接入 FTS5、FTS trigram、BM25 或向量检索。** 本次整理只补文档和配图，不实现这些功能。历史召回仍是 SQLite `LIKE` 候选查询，再由 L3 做词项命中排序；详见 [SessionStore](../src/memory/store.ts)、[工具注册](../src/core/builtin-tools.ts) 和 [L3 实现](../src/learning/exercises.ts)。
+**当前项目已接入 FTS5 词索引、trigram、BM25、稳定消息锚点和原文窗口读取。** LIKE 负责短中文、符号字面查询及能力缺失/零命中回退；没有向量检索。候选来自 [SessionStore](../src/memory/store.ts) 与 [HistorySearch](../src/memory/history-search.ts)，经 [L3](../src/learning/exercises.ts) 排序选取，再由 [历史工具](../src/core/history-tools.ts) 整理输出。
 
-实际用临时新库核对，排除 `sqlite_sequence`：
+2026-11-08 用临时新库实测，SQLite 为 3.53.0，FTS5 与 trigram 均可用。以下普通表和索引统计排除 `sqlite_sequence` 与 FTS shadow 对象：
 
-| 初始化范围 | 普通表 | 显式普通索引 | 主键／UNIQUE 自动索引 | FTS5 虚拟表 |
-| --- | ---: | ---: | ---: | ---: |
-| 只有 `SessionStore` | 4 | 2 | 4 | 0 |
-| `SessionStore` 加 `Gateway` | 5 | 2 | 5 | 0 |
+| 初始化范围 | 普通表 | 显式普通 B-tree 索引 | 普通表主键／UNIQUE 自动索引 | FTS5 虚拟表 | 同步触发器 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 只有 `SessionStore` | 5 | 2 | 5 | 2 | 3 |
+| `SessionStore` 加 `Gateway` | 6 | 2 | 6 | 2 | 3 |
+
+上述运行时另外产生 **8 张 FTS shadow table**，每个虚拟表各有 `_data`、`_idx`、`_docsize`、`_config`。它们是 SQLite 维护倒排索引的内部存储，不是 8 张项目业务表。`pragma_table_list` 分别将普通表、虚拟表与 shadow 表报告为 `table`、`virtual`、`shadow`；只统计 `sqlite_schema.type = 'table'` 会把三种对象相加。这里的 2 个显式 B-tree 索引也不包含 2 个全文虚拟表，更不包含 shadow 表内部的索引。
+
+这些数量绑定支持两种 FTS 能力的新库。缺少模块或分词器的 SQLite 构建可用 LIKE 回退；曾经启用 FTS 的库也可能保留现有派生对象。应同时查看实际对象与 `store.searchCapabilities()`，不能只用表名判断当前启用的查询路径。本项目直接以 `messages` 为外部内容来源，没有 Hermes 的两个 source view。
 
 `SessionStore` 即使使用默认压缩链路，也会创建两种检查点表；表存在不代表两种引擎同时运行。默认只使用 Hermes 式异步 L2。程序显式设置 `AgentOptions.contextEngine: 'checkpoint'` 才选择兼容库模式。CLI 的 `--compression advanced` 默认仍是异步 L2，不会开启两层叠加压缩。
 
@@ -184,23 +188,39 @@ Gateway 的 [delivery ledger](https://github.com/NousResearch/hermes-agent/blob/
 | 表 | 核心列 | 含义 |
 | --- | --- | --- |
 | `sessions` | `id` 文本主键、唯一 `session_key`、`scope`、`system_prompt`、`created_at` | 会话身份、用户范围及冻结的系统提示 |
-| `messages` | 自增整数 `id`、`session_id`、`payload`、`content`、`created_at` | 成功回合的原始轨迹；`payload` 保留结构化协议字段，`content` 供当前子串搜索 |
+| `messages` | 自增整数 `id`、`session_id`、`payload`、`content`、`created_at` | 成功回合的原始轨迹；`payload` 保留结构化协议字段，`content` 作为全文索引来源和字面回退搜索正文 |
 | `context_checkpoints` | `session_id` 主键、`payload`、`message_count`、`compression_state` | 默认异步 L2 的工作消息列表、水位与冷却状态 |
 | `summary_checkpoints` | `session_id` 主键、`generation`、`covered_count`、`prefix_hash`、`summary`、`updated_at` | 可选 `ContextEngine` 的前缀摘要、代际和 SHA256 校验信息 |
+| `history_search_meta` | `key` 文本主键、`value` | 全文索引版本与 dirty 标记，决定首次回填和能力恢复后的重建；不保存原文和模型事实 |
 | `gateway_events` | `event_key` 文本主键、`payload_hash`、`session_key`、`response`、`completed_at` | Gateway 成功事件缓存与同事件不同内容的冲突检测 |
 
 `messages.session_id` 和两张检查点表的 `session_id` 都引用 `sessions.id`。`gateway_events.session_key` 是逻辑路由键，没有声明到 `sessions` 的数据库外键。不要据此假设删除会话会自动删除事件缓存。
 
-表定义：[会话存储](../src/memory/store.ts)、[Gateway 事件存储](../src/gateway/router.ts)。
+前五张由 SessionStore 初始化，`gateway_events` 由 Gateway 按需初始化。表定义：[会话存储](../src/memory/store.ts)、[检索元数据](../src/memory/history-search.ts)、[Gateway 事件存储](../src/gateway/router.ts)。
 
-### 6.2 两个显式索引
+### 6.2 两个显式 B-tree 索引、两个全文虚拟表与三个触发器
 
 | 索引名 | 所属表与键 | 作用 |
 | --- | --- | --- |
-| `messages_session` | `messages(session_id, id)` | 按会话顺序恢复原始消息 |
+| `messages_session` | `messages(session_id, id)` | 按会话顺序恢复原始消息，并支持按 ID 读取窗口与 keyset 翻页 |
 | `sessions_scope` | `sessions(scope)` | 支持按用户范围筛选和历史搜索连接 |
 
-检查点的 session 主键、会话的唯一键和 Gateway 的事件主键使用 SQLite 自动索引，它们不算这两个显式索引。当前没有全文索引；普通 B-tree 索引不能代替 `LIKE '%片段%'` 所需的全文或子串索引。
+`sessions.id` 与唯一 `session_key` 分别生成一个自动索引，两张检查点表的 `session_id` 主键各生成一个，`history_search_meta.key` 再生成一个，合计 5 个；Gateway 事件主键使其变为 6 个。这些 `sqlite_autoindex_*` 不算上表两个显式索引。`messages.id INTEGER PRIMARY KEY` 使用 rowid 身份，不另生成同类自动索引。
+
+| 全文对象 | 定义要点 | 职责 |
+| --- | --- | --- |
+| `messages_fts` | `fts5(content, content='messages', content_rowid='id')` | 普通词项全文召回与 BM25 排序 |
+| `messages_fts_trigram` | 同一外部内容来源，加 `tokenize='trigram'` | 三字符片段子串召回与本来源 BM25 |
+
+两种索引的 `rowid` 都对应 `messages.id`。外部内容模式让原文仍以 `messages` 为准，但不会自动同步写入，必须由下面三个触发器维护。当前直接索引全部 `messages.content`，包括工具正文，没有照搬上游的工具前缀上限、trigram 工具排除和后台来源过滤。BM25 从所用 FTS 表计算，不是 `messages_session` 这个 B-tree 索引提供的分数。
+
+| 同步触发器 | 事件 | 对每个可用全文索引执行的操作 |
+| --- | --- | --- |
+| `messages_search_insert` | `AFTER INSERT ON messages` | 写入 `new.id` 与 `new.content` |
+| `messages_search_delete` | `AFTER DELETE ON messages` | 用 `old.id`、`old.content` 写入 FTS 的 delete 命令 |
+| `messages_search_update` | `AFTER UPDATE OF id, content ON messages` | 删除旧索引项，再写入新索引项 |
+
+这三个触发器在同一原文写入事务内运行，因此原文事务回滚时不会留下本轮的索引项。即使测试选用 `forceLike`，底层实际可用的全文索引仍同步，恢复 FTS 查询后不漏掉期间写入的消息。
 
 ### 6.3 默认工作 checkpoint 与事务
 
@@ -230,6 +250,29 @@ Gateway 的 [delivery ledger](https://github.com/NousResearch/hermes-agent/blob/
 两条历史开发线曾把不同格式都命名为 `context_checkpoints`。当前初始化通过列集合识别旧格式：具有 `generation` 且没有 `compression_state` 的旧表，会在事务中改名为 `summary_checkpoints`，随后建立默认工作上下文表；原始 `messages` 不改写。若旧摘要表与目标摘要表异常同时存在，明确拒绝覆盖；不能把“自动迁移”理解为会猜测两份数据该保留哪份。
 
 实现：[SessionStore](../src/memory/store.ts)、[可选 ContextEngine](../src/core/context-engine.ts)；回归：[旧库迁移与统一事务](../tests/store-merge.test.ts)、[摘要提交边界](../tests/context-checkpoint.test.ts)。
+
+### 6.5 全文索引升级、重建与原文读取
+
+`HistorySearch` 用 SAVEPOINT 在一次初始化中创建元数据、全文虚拟表和同步触发器。首次接入的旧库不会自动包含历史词项，因此在安装触发器后，对已有 `messages` 执行 FTS `rebuild`，再记录每种索引的 `:version` 与 `:dirty`。当前索引版本是 `1`，它位于 `history_search_meta`，不占用项目其他模块的 `PRAGMA user_version`。已完成初始化的正常重启不反复回填；不能识别的较新索引版本或不兼容表定义会明确报错。
+
+运行时真实缺少 FTS5 模块或 trigram 分词器时，移除不可用索引的同步依赖并标记 dirty；以后能力恢复，再从原文重建缺失期间的索引项。显式选择 LIKE 或禁用 trigram 查询与真正缺少扩展不同：如果本地底层扩展仍存在，派生索引继续保持同步。SQL 错误、数据库损坏和锁错误不会被一律当成“没有 FTS”吞掉。实现与回归见 [HistorySearch](../src/memory/history-search.ts)、[history-search.test.ts](../tests/history-search.test.ts)。
+
+原文返回分为两个步骤：
+
+```text
+history_search(query)
+  → 当前 scope 内的 FTS/trigram/LIKE 候选
+  → L3 排序、身份去重，最多 5 个命中
+  → sessionId + messageId + 正文预览 + source/rank
+history_read(session_id, around_message_id, limit)
+  → 从 messages.payload 读取原始消息窗口
+  → beforeCursor/afterCursor 继续按 ID 翻页
+  → 长正文使用 content_offset/nextContentOffset 续读
+```
+
+`readHistory` 库 API 的页内消息按 ID 升序，返回 `{ id, sessionId, message, createdAt }`，并保留存储的协议元数据。窗口默认 10 条、最多 50 条；around/before/after 三种锚点互斥，锚点必须属于目标会话。分页基于 `(session_id, id)`，不使用随新增记录移动的 OFFSET，也不要求全库 ID 在某个会话内连续。跨 scope 与不存在的会话使用相同拒绝信息。
+
+`history_read` 工具在此基础上移除旧 `reasoningContent`、将历史工具调用概括为工具名，并在总体输出预算内限制正文预览。它保留消息 ID、分页字段、`originalContentChars`、`contentOffset`、`contentTruncated` 与可用的 `nextContentOffset`。正文续读需固定 `around_message_id` 和单条消息；`content_chars` 默认 2000、范围 1～6000。字符偏移采用 JavaScript UTF-16 `.length`，不是 token。原文仍在数据库中，不因预览缩短而改写。使用示例、调试断点与离线演示见 [L3 历史检索](11-l3-history-retrieval.md)。
 
 ## 7. 只读检查一个实际数据库
 
@@ -323,6 +366,15 @@ PRAGMA main.index_list('messages');
 PRAGMA main.index_xinfo('idx_messages_session');
 ```
 
+项目自身的消息索引名为 `messages_session`，上面的 `idx_messages_session` 属于 Hermes 固定版本。还可单独检查触发器，避免把它们误计为表或索引：
+
+```sql
+SELECT name, tbl_name, sql
+FROM main.sqlite_schema
+WHERE type = 'trigger'
+ORDER BY tbl_name, name;
+```
+
 不要执行 `UPDATE sqlite_schema`、`DROP`、FTS `rebuild` 或 `VACUUM` 来“检查”数量；这些是写入或维护操作，和只读 inspection 的目的不同。若实际数量与本文不同，先核对固定提交、SQLite 能力、迁移状态和按需表，再解释差异。
 
 ## 8. 阅读与源码入口
@@ -330,7 +382,8 @@ PRAGMA main.index_xinfo('idx_messages_session');
 - 概念、调用时机和对照图：[记忆系统详解](09-memory-system-guide.md)。
 - 本项目默认请求链路：[Agent](../src/core/agent.ts)、[L2/L3](../src/learning/exercises.ts)、[压缩运行时](../src/core/compression/compressor.ts)。
 - 本项目文件记忆：[LongTermMemory](../src/memory/long-term.ts)、[memory-only flush](../src/core/memory-flush.ts)。
-- 本项目历史与恢复：[SessionStore](../src/memory/store.ts)、[工具注册](../src/core/builtin-tools.ts)、[Gateway](../src/gateway/router.ts)。
+- 本项目历史与恢复：[SessionStore](../src/memory/store.ts)、[候选全文搜索](../src/memory/history-search.ts)、[搜索/窗口工具](../src/core/history-tools.ts)、[Gateway](../src/gateway/router.ts)。
+- L3 实现与离线验收：[L3 历史检索](11-l3-history-retrieval.md)、[进阶集成测试](../tests/recall-upgrade.test.ts)。
 - Hermes 固定版本：[核心声明](https://github.com/NousResearch/hermes-agent/blob/110afdd60e3098b86950963b06a792e261bd36a4/hermes_state_common.py)、[初始化与补充索引](https://github.com/NousResearch/hermes-agent/blob/110afdd60e3098b86950963b06a792e261bd36a4/hermes_state_schema.py)、[FTS 维护](https://github.com/NousResearch/hermes-agent/blob/110afdd60e3098b86950963b06a792e261bd36a4/hermes_state_fts.py)。
 
-本文的表和索引清单服务于理解存储边界，不代表要把 Hermes 的全部运行账本直接搬入教学项目。下一步实现 FTS5 时，还需要单独设计迁移、索引同步、重建、查询边界、scope 隔离和回归验收。
+本文的表和索引清单服务于理解存储边界，不代表要把 Hermes 的全部运行账本直接搬入教学项目。当前 FTS 升级已覆盖首次回填、同步、重建、查询边界、scope 隔离和离线回归；Hermes 的 source view、lineage、后台来源筛选与更丰富的会话浏览仍是后续差异。

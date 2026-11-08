@@ -13,6 +13,7 @@ npm run build
 npm run dev -- init
 npm run check -- --all --mode reference
 npm run dev -- demo --stage 1 --mode reference
+npm run learn:recall
 npm run dev -- chat --provider demo --mode reference --message '/calc (2+3)*4' --trace
 ```
 
@@ -84,11 +85,17 @@ node --inspect-brk --import tsx src/cli.ts chat --provider demo --message '/calc
 
 附加 Chrome 的 Node 调试器或 VS Code 调试器，打开 src 下的 TypeScript 文件设置断点。--inspect-brk 先暂停入口，继续后才执行命令；可用 Source Map 对应源码，或在学习函数中暂时写 debugger 语句。
 
+L3 可以先运行 `npm run learn:recall`，用临时 SQLite 数据观察多词/中文检索、BM25、稳定消息 ID、窗口和分页；它不调用 Kimi，也不写入日常 profile。再执行 `npm run dev -- check --stage 2 --mode learner --trace --debug`，逐个调试阶段 2 的 26 项契约。教学顺序和工具参数见 [L3 历史检索教程](11-l3-history-retrieval.md)。
+
 | 位置 | 观察什么 |
 | --- | --- |
 | `src/core/providers/kimi.ts` 的 `complete` | L0 请求、工具与推理字段、响应、错误和取消 |
 | `src/learning/exercises.ts` 的 `runLoop`（已实现） | 中文注释、context/delta、文本与工具共存、推理字段、父级取消 |
 | `src/learning/exercises.ts` 的 `compactHistory`（已实现） | 软阈值、工具清理、分区、异步摘要与失败选择 |
+| `src/learning/exercises.ts` 的 `selectMemories`（已实现） | 词项覆盖、live 优先、同源 BM25、身份去重与输入不变 |
+| `src/memory/history-search.ts` 的 `search` | FTS5/trigram 能力、字面回退、scope 在 LIMIT 前过滤、候选 source/rank |
+| `src/memory/store.ts` 的 `readHistory` | 会话与锚点隔离、窗口补齐、before/after ID 游标和原文 |
+| `src/core/history-tools.ts` 的两个 handler | search → read 参数、结构化预算、正文 offset 与续读进度 |
 | `src/core/compression/compressor.ts` / `provider.ts` | 辅助模型回退、失败冷却、无进展退避和溢出恢复 |
 | `src/core/memory-flush.ts` / `LongTermMemory.manage` | 记忆专用请求、容量错误重试、批次最终容量与冻结快照 |
 | `src/core/tools.ts` 的 `ToolRegistry.execute` | schema、限时、错误 envelope、AbortSignal |
@@ -136,7 +143,7 @@ npm run check -- --all --mode reference
 npm run build
 ```
 
-本次合并已通过 `npm run verify`：类型检查、255/255 项测试、reference 六阶段验收和构建全部成功，其中阶段 2 为 20/20。本次仅使用离线和本机协议测试，未调用真实 Kimi 服务。
+阶段 2 当前包含 26 项契约：原有 20 项加上 6 项 L3 进阶检索与窗口读取检查。运行 `npm run verify` 查看当前提交的类型检查、完整测试、reference 六阶段验收和构建结果；测试总数以本次实际输出为准。上述检查使用离线和本机协议测试，不调用真实 Kimi 服务。
 
 完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。当前 L0～L3 已完成，L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`。阶段 1 可独立用 `check --stage 1 --mode learner --trace` 阅读与调试；完整 learner 聊天仍需 L4，阶段 2 可验收 L2/L3，下一步实现阶段 3 的 L4。阶段 4 只是扩展基线，不能自动验证任意自定义插件。
 
@@ -156,6 +163,10 @@ npm run build
 | 工具 ok=false | error/message、参数和目标，不能当成成功事实 |
 | 同 eventId 冲突 | 是否把旧 ID 用在新正文上 |
 | 旧会话记忆未变 | 快照是设计行为，用读取工具检查即时值或 /new |
+| 历史搜索无结果 | 当前 scope、关键词、`searchCapabilities()`；短中文/符号会走字面 LIKE，FTS 不自动理解同义词 |
+| BM25 结果方向相反 | 同一来源内 rank 越小越相关，常为负数；不能把不同来源 rank 混排或按 DESC 排序 |
+| 搜索预览缺少前后文 | 用命中的 `sessionId/messageId` 调用 `history_read`，再用 before/after 游标翻页 |
+| 长历史正文仍有省略 | 用 `around_message_id`、`limit: 1` 和 `nextContentOffset` 续读；保留结构化定位字段，必要时缩小窗口 |
 | 新 Skill 不在索引 | 是否批准、名称是否冲突、是否新建会话 |
 | 修改插件未生效 | Node import 缓存，重启入口 |
 | Profile lock 错误 | 旧实例是否仍运行，或崩溃残留目录；先核实再恢复 |

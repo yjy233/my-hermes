@@ -29,6 +29,7 @@ npm run kimi:chat
 
 ```bash
 npm run dev -- chat --provider demo --mode reference --message '/calc (2+3)*4' --trace
+npm run learn:recall
 npm run check -- --all --mode reference
 npm run typecheck
 npm test
@@ -36,6 +37,8 @@ npm run build
 ```
 
 计算示例会经过 Provider、工具校验/执行与 SQLite 持久化，结果为 `20`。DemoProvider 是确定性离线模拟器，不是语言模型；支持 `/calc`、`/remember`、`/memory`、`/recall` 和 `/skill`。交互中 `/new` 开始新会话，`/quit` 退出。Node 的 node:sqlite 可能输出实验性 API 警告，与应用错误不同。
+
+`learn:recall` 用临时数据离线演示 L3：多词检索、中文与符号回退、消息 ID、原文窗口和分页，不需要模型密钥。跟着断点阅读的步骤见 [L3 历史检索教程](docs/11-l3-history-retrieval.md)。
 
 开发入口通过 `tsx` 运行 TypeScript。构建后也可用 `node dist/cli.js init` 和 `node dist/cli.js chat`；`typescript`、`tsx` 等只属于开发依赖，运行构建产物不需要第三方运行时包。
 
@@ -50,7 +53,7 @@ npm run build
 | --- | --- | --- | --- |
 | 0 | Kimi：真实模型请求、工具与推理字段 | 已实现，阅读与协议回归 | `npm run kimi:check` |
 | 1 | Core：模型、工具、观察、终止 | L1 已实现，阅读 / 调试 / 对照 | `npm run dev -- check --stage 1 --mode learner` |
-| 2 | 短期上下文、长期记忆、历史召回 | L2/L3 已实现，阅读 / 调试 / 对照 | `npm run dev -- check --stage 2 --mode learner` |
+| 2 | 短期上下文、长期记忆、历史召回 | L2/L3 已实现，26 项离线验收 | `npm run dev -- check --stage 2 --mode learner` |
 | 3 | Gateway：授权、隔离、幂等 | L4 `sessionKey` | `npm run dev -- check --stage 3 --mode learner` |
 | 4 | Skills 与可信 Plugin | 添加自己的 Skill / Tool Plugin | `npm run dev -- check --stage 4 --mode learner` |
 | 5 | 自进化：成功轨迹到技能候选 | L5 `reflect` | `npm run dev -- check --stage 5 --mode learner` |
@@ -90,7 +93,9 @@ npm run dev -- chat --provider demo --mode reference --plugin ./examples/plugins
 
 [记忆系统图解](docs/09-memory-system-guide.md) 用六张 imagegen 配图详细对照 Hermes 与本项目，说明自动加载、模型主动检索、AI 写入、冻结快照和上下文压缩；表、索引与只读检查 SQL 见 [记忆存储参考](docs/10-memory-storage-reference.md)。
 
-L2 默认采用旧工具结果清理、头尾保护和中段模型摘要，支持辅助模型一次回退、失败冷却、Provider 确认溢出后的有界恢复与重启恢复。需要摘要时，可先运行只开放记忆工具的长期记忆整理。SQLite 另外保留成功轮次的完整消息；`history_search` 也能立即检索本轮尚未入库的已执行工具原文，检索仍为子串召回。压缩提示词、配置与边界见 [上下文压缩](docs/08-context-compression.md)；`--compression basic` 关闭语义压缩，改用独立辅助函数 `trimHistory` 整轮裁剪，`--compression advanced` 选择默认主链路。
+L2 默认采用旧工具结果清理、头尾保护和中段模型摘要，支持辅助模型一次回退、失败冷却、Provider 确认溢出后的有界恢复与重启恢复。需要摘要时，可先运行只开放记忆工具的长期记忆整理。压缩提示词、配置与边界见 [上下文压缩](docs/08-context-compression.md)；`--compression basic` 关闭语义压缩，改用独立辅助函数 `trimHistory` 整轮裁剪，`--compression advanced` 选择默认主链路。
+
+SQLite 保留成功轮次的完整消息。`history_search` 从同用户原文中用 FTS5 `unicode61` 词索引、`trigram` 子串索引或字面 LIKE 回退召回候选，再由 L3 按词项覆盖、本轮原文优先和同源 BM25 排序，并按会话与消息 ID 去重。已持久化的命中带稳定 `messageId`；模型可接着调用 `history_read` 读取周边消息、用 ID 游标翻页，或按正文 offset 续读长内容。当前轮尚未入库的工具原文也可搜索，但暂时没有持久消息 ID。搜索与读取结果保留结构化定位字段，正文预览按预算缩短。完整调用链与练习见 [L3 历史检索教程](docs/11-l3-history-retrieval.md)。FTS 是关键词检索，不包含向量或语义模型。
 
 Skill 只提前注入名称/描述，正文通过工具按需读取。Plugin 是显式信任的 TypeScript / JavaScript 模块，导出 `register(context)` 注册工具与 Hook。离线 Demo 不自动选择任意插件工具；阶段 4 直接验收插件调用，真实模型可根据 schema 选择。插件不是沙箱，源文件修改后需重启进程。
 
@@ -137,7 +142,7 @@ npm run dev -- chat --provider kimi --provider-mode learner --mode reference \
 ```text
 src/
   core/         Agent、模型协议、工具运行时、providers/Kimi L0
-  memory/       node:sqlite 会话、Markdown 长期记忆
+  memory/       SQLite 原始会话、FTS5 历史检索、Markdown 长期记忆
   gateway/      事件授权、会话隔离与去重
   connectors/   JSONL、本机 HTTP
   skills/       元数据索引、正文按需读取
@@ -149,7 +154,7 @@ src/
   lab.ts        0～5 六个离线阶段验收场景
 ```
 
-[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md) · [Kimi](docs/07-kimi-provider.md) · [上下文压缩](docs/08-context-compression.md)
+[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md) · [Kimi](docs/07-kimi-provider.md) · [上下文压缩](docs/08-context-compression.md) · [L3 历史检索](docs/11-l3-history-retrieval.md)
 
 运行数据默认存入 `.hermes-lab/`。用子命令的 `--home PATH` 或 `MY_HERMES_HOME` 隔离 profile；`config.json` 使用 `mode/providerMode/provider/model/baseUrl/maxSteps/contextChars/providerTimeoutMs/turnTimeoutMs/autoReflect/plugins` 等配置，命令行优先。`check/demo` 也读取所选 profile 的 mode，但始终用临时数据和离线 Provider，不加载其插件。
 

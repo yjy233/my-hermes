@@ -83,7 +83,10 @@ test('history tool rejects scope overrides, bounds output and reports storage fa
   const bounded = await registry.execute(call);
   assert.ok(bounded.content.length <= registry.maxOutputChars);
   assert.equal(JSON.parse(bounded.content).ok, true);
-  assert.equal(JSON.parse(bounded.content).truncated, true);
+  const boundedHits = JSON.parse(bounded.content).result as MemoryHit[];
+  assert.ok(Array.isArray(boundedHits), '缩短正文时仍保留结构化搜索结果');
+  assert.equal(boundedHits[0].contentTruncated, true);
+  assert.ok(Number.isSafeInteger(boundedHits[0].messageId), '长正文不能挤掉续读锚点');
   const forbidden = JSON.parse((await registry.execute({ ...call, arguments: { query: 'large-history', scope: 'bob' } })).content);
   assert.equal(forbidden.ok, false);
   assert.match(forbidden.message, /unexpected property scope/);

@@ -82,8 +82,10 @@ export class Agent {
           names.clear();
           for (const call of message.toolCalls ?? []) names.set(call.id, call.name);
         } else if (message.role === 'tool' && message.toolCallId) {
-          if (names.get(message.toolCallId) !== 'history_search') {
-            hits.push({ sessionId: session.id, content: message.content, score: 1 });
+          const name = names.get(message.toolCallId);
+          if (name !== 'history_search' && name !== 'history_read') {
+            hits.push({ sessionId: session.id, content: message.content, score: 1,
+              role: message.role, source: 'live' as const });
           }
           names.delete(message.toolCallId);
         }

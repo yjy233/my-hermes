@@ -84,8 +84,31 @@ export function selectMemories(query: string, hits: MemoryHit[], limit: number):
   if (limit <= 0 || !query.trim()) return [];
   const normalized = query.trim().toLowerCase();
   const terms = [...new Set(normalized.match(/[\p{L}\p{N}_]+/gu) ?? [normalized])];
-  const score = (hit: MemoryHit) => terms.filter(term => hit.content.toLowerCase().includes(term)).length;
-  return [...hits].sort((a, b) => score(b) - score(a)).slice(0, Math.max(0, limit));
+  const identities = new Set<string>();
+  const rows = hits.flatMap((hit, index) => {
+    if (Number.isSafeInteger(hit.messageId) && hit.messageId! > 0) {
+      const key = JSON.stringify([hit.sessionId, hit.messageId]);
+      if (identities.has(key)) return [];
+      identities.add(key);
+    }
+    const relevance = terms.filter(term => hit.content.toLowerCase().includes(term)).length;
+    return [{ hit, index, relevance, live: hit.source === 'live' }];
+  }).sort((a, b) => b.relevance - a.relevance || Number(b.live) - Number(a.live) || a.index - b.index);
+
+  // 不比较不同索引的 BM25。先确定稳定的来源位置，再在同一来源的位置内重排。
+  const buckets = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    const { source, rank } = row.hit;
+    if ((source !== 'fts5' && source !== 'trigram') || typeof rank !== 'number' || !Number.isFinite(rank)) return;
+    const key = JSON.stringify([row.relevance, row.live, source]);
+    const positions = buckets.get(key) ?? [];
+    positions.push(index); buckets.set(key, positions);
+  });
+  for (const positions of buckets.values()) {
+    const ordered = positions.map(index => rows[index]).sort((a, b) => a.hit.rank! - b.hit.rank! || a.index - b.index);
+    positions.forEach((position, index) => { rows[position] = ordered[index]; });
+  }
+  return rows.slice(0, limit).map(row => row.hit);
 }
 export function sessionKey(channel: string, conversationId: string, userId: string): string {
   return createHash('sha256').update(JSON.stringify([channel, conversationId, userId])).digest('hex');

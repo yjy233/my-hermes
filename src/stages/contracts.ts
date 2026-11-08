@@ -7,6 +7,7 @@ import { ToolRegistry } from '../core/tools.js';
 import type { Algorithms } from '../learning/types.js';
 import { SessionStore, type MemoryHit } from '../memory/store.js';
 import { compressionCases } from './compression.js';
+import { recallCases } from './recall.js';
 
 export interface StageCase {
   name: string;
@@ -213,10 +214,12 @@ function memoryCases(algorithms: Algorithms, emit: Emit): StageCase[] {
           store.appendMessages(session.id, [{ role: 'user', content: `归档编号：${session.key}` }]);
         }
         const hits = algorithms.selectMemories('归档编号', store.search('归档编号', scope, 20), 5);
-        assert.deepEqual(hits.map(hit => hit.sessionId), [second.id, first.id]);
+        // 这个契约验证 scope 内的跨会话召回；FTS 相关性可能改变不同长度正文的顺序。
+        assert.deepEqual(new Set(hits.map(hit => hit.sessionId)), new Set([first.id, second.id]));
         assert.deepEqual(algorithms.selectMemories('missing', store.search('missing', scope), 5), []);
       } finally { store.close(); }
     } },
+    ...recallCases(algorithms, emit),
   ];
 }
 

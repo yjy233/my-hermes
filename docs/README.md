@@ -14,6 +14,7 @@
 | [08 上下文压缩](08-context-compression.md) | 异步 L2、摘要回退、冷却、溢出恢复、持久化与长期记忆整理 |
 | [09 记忆系统图解](09-memory-system-guide.md) | 六张生成配图：Hermes 与本项目的文件记忆、检索工具、冻结快照、压缩和差距 |
 | [10 记忆存储参考](10-memory-storage-reference.md) | Hermes 的 17 张普通表、2 张 FTS 虚拟表、30 个显式索引，以及本项目的数据库和迁移 |
+| [11 L3 历史检索教程](11-l3-history-retrieval.md) | FTS5、中文回退、BM25、稳定消息 ID、原文窗口与分页；配合 `npm run learn:recall` 单步学习 |
 
 ![架构总览](images/architecture.png)
 

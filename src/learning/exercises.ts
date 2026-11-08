@@ -202,27 +202,82 @@ export async function compactHistory(
   return runtime.commit(messages, nextContext, tools, generated ? 'summary' : 'fallback');
 }
 
-// 历史召回，让 Agent 能找到被压缩出上下文的原始对话。
+/**
+ * L3：对已经召回的历史候选做去重与重排，让模型优先看到有用的原文。
+ *
+ * 分工要清楚：SessionStore 的 FTS5/trigram/LIKE 负责“找出哪些消息”，
+ * 本函数负责“给这些候选排顺序、最多返回多少条”。它不再查询数据库，
+ * 也不能自行扩大 scope；候选必须由调用方提前按当前用户隔离。
+ * FTS5 仍属于关键词检索，不会自动拥有向量检索的语义理解能力。
+ */
 export function selectMemories(query: string, hits: MemoryHit[], limit: number): MemoryHit[] {
-  // 1. history_search 先用 SessionStore.search 按 scope 查完整 messages 表。
-  // 候选可以来自当前或其他 session；这里不接收 scope，也不自行读取别人的记录。
+  // 1. limit 是工具结果的条数上限，不是字符数。拒绝 NaN/Infinity/小数，
+  // 避免 slice 隐式取整，让调用方以为自己的上限被正确执行了。
   if (!Number.isSafeInteger(limit)) throw new RangeError('Memory limit must be a safe integer');
   if (limit <= 0 || !query.trim() || !hits.length) return [];
 
-  // 2. 提取查询里的字母、数字、下划线词项，大小写不敏感，重复词只计一次。
-  // 中文连续文字作为一个子串；这不是分词模型或向量语义检索。
+  // 2. 查询词去重并忽略大小写。“TypeScript typescript 记忆”只有两个词项。
+  // 连续中文这里仍是一个词项；候选层的 trigram 负责中文子串召回。
+  // 若查询只有 % 等符号，则把整个查询当字面词项，不能把它变成通配符。
   const normalized = query.trim().toLowerCase();
   const terms = new Set(normalized.match(/[\p{L}\p{N}_]+/gu) ?? [normalized]);
-  const ranked = hits.map((hit, index) => {
+
+  // 3. 同一条数据库消息可能从不同召回路径重复进入候选，用稳定身份去重。
+  // 不按 content 去重：两次不同会话说了同一句话，仍是两条不同的经历。
+  // 还没入库的 live 消息可能没有 messageId，此时不能猜测它的持久身份。
+  // 去重要在截断条数之前完成，否则“前五条有三条重复”会意外只剩两条。
+  const seen = new Set<string>();
+  const ranked: { hit: MemoryHit; index: number; relevance: number; live: boolean }[] = [];
+  for (const [index, hit] of hits.entries()) {
+    if (Number.isSafeInteger(hit.messageId) && hit.messageId! > 0) {
+      const identity = JSON.stringify([hit.sessionId, hit.messageId]);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+    }
     const content = hit.content.toLowerCase();
     let relevance = 0;
     for (const term of terms) if (content.includes(term)) relevance++;
-    return { hit, index, relevance };
-  });
+    ranked.push({ hit, index, relevance, live: hit.source === 'live' });
+  }
 
-  // 3. 命中更多不同词项的记录优先；同分沿用候选顺序（数据库默认较新优先）。
-  // 排序装饰后的新数组，不改原 hits、正文或存储层 score，最后应用数量上限。
-  ranked.sort((left, right) => right.relevance - left.relevance || left.index - right.index);
+  // 4. 第一层规则简单且可解释：不同词项命中数越多越靠前。
+  // 同分时先看本轮 live 原文，再看已持久化历史；live 没有 BM25，
+  // 不能因为“缺一个数值”就被所有历史记录挤到最后。
+  // 原始下标是最终稳定顺序；只操作新数组，不原地 sort 调用方的 hits。
+  ranked.sort((left, right) => right.relevance - left.relevance
+    || Number(right.live) - Number(left.live) || left.index - right.index);
+
+  // 5. BM25 的方向容易弄反：SQLite FTS5 通常返回负数，数值越小越相关。
+  // 但是词索引和 trigram 的分数来自不同语料/切词，不能跨来源直接比较。
+  // 我们在“词项分数相同、live 优先级相同”的一层中，保留每个来源原本的
+  // 位置，只把同来源且有有效 rank 的候选按 BM25 放回这些位置。
+  //
+  // 这样也避免一个隐蔽错误：比较器若写成“同来源比 rank，否则比下标”，
+  // 面对 fts A、like B、fts C 时可能产生循环关系，不再是合法的排序规则。
+  for (let start = 0; start < ranked.length;) {
+    let end = start + 1;
+    while (end < ranked.length && ranked[end].relevance === ranked[start].relevance
+        && ranked[end].live === ranked[start].live) end++;
+
+    const positions = new Map<string, number[]>();
+    for (let index = start; index < end; index++) {
+      const { source, rank } = ranked[index].hit;
+      if ((source === 'fts5' || source === 'trigram') && typeof rank === 'number' && Number.isFinite(rank)) {
+        const slots = positions.get(source) ?? [];
+        slots.push(index);
+        positions.set(source, slots);
+      }
+    }
+    for (const slots of positions.values()) {
+      const sameSource = slots.map(index => ranked[index]);
+      sameSource.sort((left, right) => left.hit.rank! - right.hit.rank! || left.index - right.index);
+      slots.forEach((position, index) => { ranked[position] = sameSource[index]; });
+    }
+    start = end;
+  }
+
+  // 6. score 是存储层保留的兼容字段，不在这里改写成另一种分值；
+  // 返回的仍然是 MemoryHit，只去掉临时的下标/词项分数/live 装饰信息。
   return ranked.slice(0, limit).map(item => item.hit);
 }
 export function sessionKey(_channel: string, _conversationId: string, _userId: string): string {

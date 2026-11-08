@@ -4,6 +4,7 @@ import type { SkillCatalog } from '../skills/catalog.js';
 import type { Algorithms } from '../learning/types.js';
 import type { MemoryHit } from '../memory/store.js';
 import { ToolRegistry, type JsonSchema } from './tools.js';
+import { registerHistoryTools } from './history-tools.js';
 
 /** 轻量算术表达式解析器，限制复杂度和数值范围，不执行 eval 或 new Function。 */
 export function calculate(expression: string): number {
@@ -84,14 +85,7 @@ export function buildRegistry(memory: LongTermMemory, store: SessionStore, skill
     }),
     handler: args => memory.manage(scope, args.target as MemoryStoreTarget, args.operations as MemoryOperation[]),
   });
-  registry.register({ name: 'history_search', description: 'Search previous sessions for the same user only.',
-    parameters: objectSchema({ query: { type: 'string', maxLength: 300 } }),
-    handler: args => {
-      const query = args.query as string;
-      const needle = query.trim().toLowerCase();
-      const live = needle ? (liveHistory?.() ?? []).filter(hit => hit.content.toLowerCase().includes(needle)).toReversed() : [];
-      return algorithms.selectMemories(query, [...live, ...store.search(query, scope, 20)], 5);
-    } });
+  registerHistoryTools(registry, store, scope, algorithms, liveHistory);
   registry.register({ name: 'skill_read', description: 'Read the full body of a named skill in the skill index.',
     parameters: objectSchema({ name: { type: 'string', maxLength: 64 } }),
     handler: args => skills.read(args.name as string) });

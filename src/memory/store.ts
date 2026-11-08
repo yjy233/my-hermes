@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { assertFiniteJson, assertToolBoundary, type Message } from '../core/models.js';
 import { initialCompressionState, type CompressionState } from '../core/compression/settings.js';
+import { HistorySearch, type HistorySearchOptions } from './history-search.js';
 
 export interface Session {
   id: string;
@@ -13,7 +14,38 @@ export interface Session {
   systemPrompt: string | null;
 }
 export interface SessionRecord extends Session { createdAt: string; messageCount: number }
-export interface MemoryHit { sessionId: string; content: string; score: number }
+/**
+ * 候选保留原始正文和稳定消息锚点，供 L3 排序与后续窗口读取。
+ * rank 是 SQLite BM25 的原始值（越小越相关），不是 score 的替代含义。
+ * 可选字段保持手写练习 fixture 和尚未入库的 live 工具记录兼容。
+ */
+export interface MemoryHit {
+  sessionId: string;
+  content: string;
+  score: number;
+  messageId?: number;
+  role?: Message['role'];
+  createdAt?: string;
+  source?: 'fts5' | 'trigram' | 'like' | 'live';
+  rank?: number;
+  contentTruncated?: boolean;
+  originalContentChars?: number;
+}
+export interface HistoryMessage { id: number; sessionId: string; message: Message; createdAt: string }
+export interface HistoryPage {
+  sessionId: string;
+  messages: HistoryMessage[];
+  hasBefore: boolean;
+  hasAfter: boolean;
+  beforeCursor?: number;
+  afterCursor?: number;
+}
+export interface HistoryReadOptions {
+  aroundMessageId?: number;
+  beforeMessageId?: number;
+  afterMessageId?: number;
+  limit?: number;
+}
 /** 默认 Hermes 式压缩保存的可继续执行的工作上下文，与摘要代际检查点分表。 */
 export interface WorkingContextCheckpoint { messages: Message[]; state: CompressionState }
 
@@ -106,9 +138,10 @@ function validateCompressionState(value: unknown): asserts value is CompressionS
 export class SessionStore {
   readonly path: string;
   private readonly database: DatabaseSync;
+  private readonly historySearch: HistorySearch;
   private closed = false;
 
-  constructor(path: string) {
+  constructor(path: string, searchOptions: HistorySearchOptions = {}) {
     this.path = path === ':memory:' ? path : resolve(path);
     if (path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
     this.database = new DatabaseSync(this.path);
@@ -164,6 +197,13 @@ export class SessionStore {
       this.database.exec('COMMIT');
     } catch (error) {
       this.database.exec('ROLLBACK');
+      this.database.close();
+      throw error;
+    }
+    try {
+      // 建立派生索引与触发器，旧库在首次升级时回填；后续原始消息事务自动同步索引。
+      this.historySearch = new HistorySearch(this.database, searchOptions);
+    } catch (error) {
       this.database.close();
       throw error;
     }
@@ -327,16 +367,70 @@ export class SessionStore {
   }
 
   search(query: string, scope: string, limit = 5): MemoryHit[] {
-    if (!query.trim() || limit <= 0) return [];
-    if (query.length > 1000) throw new Error('Search query is too long');
-    if (!Number.isInteger(limit)) throw new Error('Search limit must be an integer');
-    const needle = query.trim().replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
-    return this.database.prepare(
-      "SELECT m.session_id, m.content FROM messages m JOIN sessions s ON s.id = m.session_id "
-      + "WHERE s.scope = ? AND m.content LIKE ? ESCAPE '\\' ORDER BY m.id DESC LIMIT ?",
-    ).all(scope, `%${needle}%`, Math.min(limit, 100)).map(row => ({
-      sessionId: String(row.session_id), content: String(row.content), score: 1,
-    }));
+    return this.historySearch.search(query, scope, limit);
+  }
+
+  /** 实际启用的能力供离线验收和诊断使用，不把 LIKE 回退伪装成 FTS。 */
+  searchCapabilities(): { fts5: boolean; trigram: boolean } {
+    return this.historySearch.capabilities();
+  }
+
+  /**
+   * 根据稳定消息 ID 读取原始历史窗口，不依赖压缩后的工作视图。
+   *
+   * 先验证 session 所属 scope，再检查锚点。跨用户和不存在的 session 返回同类错误，
+   * 工具不能借错误消息探测其他用户的会话是否存在。before/after 使用游标而非 OFFSET：
+   * 新增消息不会把已读页向后挤，消息 ID 中夹着其他会话的记录也不会混进本页。
+   */
+  readHistory(sessionId: string, scope: string, options: HistoryReadOptions = {}): HistoryPage {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Invalid history options');
+    const limit = options.limit ?? 10;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new RangeError('History limit must be in [1, 50]');
+    const anchors = [options.aroundMessageId, options.beforeMessageId, options.afterMessageId]
+      .filter((id): id is number => id !== undefined);
+    if (anchors.length > 1) throw new Error('Choose only one history cursor: around, before, or after');
+    if (anchors.some(id => !Number.isSafeInteger(id) || id < 1)) throw new RangeError('History message ID must be positive');
+    if (typeof sessionId !== 'string' || !sessionId || typeof scope !== 'string' || !scope
+        || !this.database.prepare('SELECT 1 FROM sessions WHERE id = ? AND scope = ?').get(sessionId, scope)) {
+      throw new Error('History not found in current scope');
+    }
+    // 锚点也必须属于该会话；不能传入其他会话的 ID 猜测全局消息排列。
+    if (anchors.length && !this.database.prepare('SELECT 1 FROM messages WHERE session_id = ? AND id = ?')
+      .get(sessionId, anchors[0])) throw new Error('History anchor not found in current session');
+
+    type Row = { id: number; session_id: string; payload: string; created_at: string };
+    // 运算符和排序来自代码里的固定枚举，用户值全部通过 SQL 参数绑定。
+    const rowsAfter = (id: number, count: number) => this.database.prepare(
+      'SELECT id, session_id, payload, created_at FROM messages WHERE session_id = ? AND id > ? ORDER BY id LIMIT ?',
+    ).all(sessionId, id, count) as unknown as Row[];
+    const rowsBefore = (id: number, count: number) => (this.database.prepare(
+      'SELECT id, session_id, payload, created_at FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
+    ).all(sessionId, id, count) as unknown as Row[]).reverse();
+    let rows: Row[];
+    if (options.aroundMessageId !== undefined) {
+      const id = options.aroundMessageId;
+      const anchor = this.database.prepare(
+        'SELECT id, session_id, payload, created_at FROM messages WHERE session_id = ? AND id = ?',
+      ).get(sessionId, id) as unknown as Row;
+      let before = rowsBefore(id, Math.floor((limit - 1) / 2));
+      const after = rowsAfter(id, limit - before.length - 1);
+      // 锚点接近结尾时向前补齐，接近开头时则自然向后补齐，始终保持时间顺序。
+      if (before.length + after.length + 1 < limit) before = rowsBefore(id, limit - after.length - 1);
+      rows = [...before, anchor, ...after];
+    } else if (options.beforeMessageId !== undefined) rows = rowsBefore(options.beforeMessageId, limit);
+    else rows = rowsAfter(options.afterMessageId ?? 0, limit);
+
+    const first = rows[0]?.id, last = rows.at(-1)?.id;
+    const hasBefore = first !== undefined && Boolean(this.database.prepare(
+      'SELECT 1 FROM messages WHERE session_id = ? AND id < ? LIMIT 1',
+    ).get(sessionId, first));
+    const hasAfter = last !== undefined && Boolean(this.database.prepare(
+      'SELECT 1 FROM messages WHERE session_id = ? AND id > ? LIMIT 1',
+    ).get(sessionId, last));
+    return { sessionId, messages: rows.map(row => ({ id: Number(row.id), sessionId,
+      message: parseMessage(String(row.payload)), createdAt: String(row.created_at) })), hasBefore, hasAfter,
+    ...(first !== undefined ? { beforeCursor: Number(first) } : {}),
+    ...(last !== undefined ? { afterCursor: Number(last) } : {}) };
   }
 
   listSessions(): SessionRecord[] {

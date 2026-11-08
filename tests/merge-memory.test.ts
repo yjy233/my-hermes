@@ -63,13 +63,16 @@ test('工具原文在本轮压缩后仍可立即检索，不必等待最终答�
   writeFileSync(plugin, "let calls=0; export function register(ctx) { ctx.registerTool({name:'large_output',description:'Read long data',parameters:{type:'object'},handler:()=>`live-original-${++calls}:`+'x'.repeat(4500)}); }");
   let calls = 0;
   const provider: Provider = { async complete(messages, tools) {
-    assert.ok(requestSize(messages, tools) <= 9500);
+    // 新增 history_read schema 也占请求预算；仍让两份长输出超过预算以触发清理。
+    assert.ok(requestSize(messages, tools) <= 12_000);
     const step = calls++;
     if (step < 2) return { content: '正在处理已确认的中间步骤。'.repeat(100), toolCalls: [
       { id: `large-${step}`, name: 'large_output', arguments: {} },
     ] };
     if (step === 2) {
       assert.deepEqual(store.loadMessages(session.id), [], '主轮次尚未成功，原文此时还没有入库');
+      assert.ok(!messages.some(message => message.role === 'tool' && message.content.includes('live-original-1')),
+        '第一个工具的完整输出已经离开工作上下文，检索必须从未提交原轨迹找回');
       return { content: '', toolCalls: [{ id: 'find-live', name: 'history_search', arguments: { query: 'live-original-1' } }] };
     }
     const result = JSON.parse(messages.at(-1)!.content) as { ok: boolean; result: MemoryHit[] };
@@ -79,9 +82,40 @@ test('工具原文在本轮压缩后仍可立即检索，不必等待最终答�
     return { content: '已从本轮原始工具记录中找回内容。' };
   } };
   await new Agent({ provider, summaryProvider: { async complete() { return { content: summary }; } },
-    store, memory, skills, plugins: [plugin], contextChars: 9500, mode: 'learner',
+    store, memory, skills, plugins: [plugin], contextChars: 12_000, mode: 'learner',
     compression: { protectFirst: 1, protectLast: 2, summaryChars: 600, memoryFlush: false },
   }).run('session', 'alice', '完成两个读取步骤，再找回第一个步骤的完整原文。');
   assert.equal(calls, 4);
   assert.equal(store.loadMessages(session.id).filter(message => message.role === 'tool').length, 3);
+});
+
+test('同轮搜索和窗口读取的包装结果不能再次被当作live原文召回', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'hermes-recall-no-recursion-'));
+  const store = new SessionStore(':memory:');
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const old = store.getOrCreate('old', 'alice');
+  store.appendMessages(old.id, [{ role: 'user', content: 'TypeScript memory 的原始验证编号 B-42。' }]);
+  let requests = 0;
+  const provider: Provider = { async complete(messages) {
+    requests++;
+    if (requests === 2) {
+      const hit = JSON.parse(messages.at(-1)!.content).result[0] as MemoryHit;
+      return { content: '', toolCalls: [{ id: 'read', name: 'history_read', arguments: {
+        session_id: hit.sessionId, around_message_id: hit.messageId, limit: 1,
+      } }] };
+    }
+    if (requests === 4) {
+      const payload = JSON.parse(messages.at(-1)!.content) as { ok: boolean; result: MemoryHit[] };
+      assert.equal(payload.ok, true); assert.equal(payload.result.length, 1);
+      assert.equal(payload.result[0].sessionId, old.id);
+      assert.equal(payload.result[0].source, 'fts5', '不能把search/read结果包装JSON作为live候选排在原文前面');
+      assert.ok(payload.result[0].messageId);
+      return { content: '已核对原始消息。' };
+    }
+    return { content: '', toolCalls: [{ id: `search-${requests}`, name: 'history_search', arguments: { query: 'TypeScript memory' } }] };
+  } };
+  await new Agent({ provider, store, memory: new LongTermMemory(root), skills: new SkillCatalog([]),
+    mode: 'learner', maxSteps: 5, compression: { enabled: false },
+  }).run('new', 'alice', '先搜索再读原文，然后再搜索同一条记录。');
+  assert.equal(requests, 4);
 });
