@@ -2,6 +2,8 @@
 
 本实现参考本地 `/Users/bill/code/hermes-agent` 在 2026-11-05 的提交 `29a61cb7ab509cda0c376bf3860edb87210b0755`，主要阅读 `agent/context_compressor.py`、`context_compressor_window.py`、`context_compressor_summary.py` 与 `context_compressor_prune.py`。TypeScript 算法与提示词独立编写，不导入、调用或复制 Hermes 的 Python 实现。
 
+本篇聚焦当前 TypeScript 运行链路。2026-11-08 的 Hermes 记忆系统源码研究、六张配图，以及快照刷新/provider hook 与本项目 flush 的差异，见 [记忆系统图解](09-memory-system-guide.md)。
+
 ## 请求中的位置
 
 ```mermaid

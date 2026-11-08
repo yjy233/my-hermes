@@ -88,6 +88,8 @@ npm run dev -- chat --provider demo --mode reference --plugin ./examples/plugins
 
 长期记忆是按用户隔离的 `MEMORY.md` / `USER.md`，每文件默认 4000 字符，超限报错。`memory` 工具支持同一目标的批次 `add/patch/remove`，按整批最终容量原子写入；模型可先合并旧事实，再添加新事实。`/remember` 仍是整篇替换演示。已有会话的系统提示保持快照，新会话读取更新后的记忆。
 
+[记忆系统图解](docs/09-memory-system-guide.md) 用六张 imagegen 配图详细对照 Hermes 与本项目，说明自动加载、模型主动检索、AI 写入、冻结快照和上下文压缩；表、索引与只读检查 SQL 见 [记忆存储参考](docs/10-memory-storage-reference.md)。
+
 L2 默认采用旧工具结果清理、头尾保护和中段模型摘要，支持辅助模型一次回退、失败冷却、Provider 确认溢出后的有界恢复与重启恢复。需要摘要时，可先运行只开放记忆工具的长期记忆整理。SQLite 另外保留成功轮次的完整消息；`history_search` 也能立即检索本轮尚未入库的已执行工具原文，检索仍为子串召回。压缩提示词、配置与边界见 [上下文压缩](docs/08-context-compression.md)；`--compression basic` 关闭语义压缩，改用独立辅助函数 `trimHistory` 整轮裁剪，`--compression advanced` 选择默认主链路。
 
 Skill 只提前注入名称/描述，正文通过工具按需读取。Plugin 是显式信任的 TypeScript / JavaScript 模块，导出 `register(context)` 注册工具与 Hook。离线 Demo 不自动选择任意插件工具；阶段 4 直接验收插件调用，真实模型可根据 schema 选择。插件不是沙箱，源文件修改后需重启进程。

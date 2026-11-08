@@ -6,6 +6,8 @@
 
 研究日期：2026-10-25。GitHub API 查询到的参考提交为 [`4ea8d23cc9f527332ccb1d55359b27741b6ea51b`](https://github.com/NousResearch/hermes-agent/commit/4ea8d23cc9f527332ccb1d55359b27741b6ea51b)，提交时间 `2026-10-25T02:56:21Z`。以下源码链接固定到该提交；在线文档可能继续更新，分析结论以本次阅读为准。
 
+较新的记忆专题固定到 2026-11-08 的 `110afdd`，见 [记忆系统图解](09-memory-system-guide.md) 和 [存储参考](10-memory-storage-reference.md)。其中补充了成功压缩边界刷新 memory/system、历史窗口预览截断及外部 provider 自动 prefetch 等细节；本文保留早期研究快照，不把新旧版本行为混为一谈。
+
 ## 模块对应
 
 | 能力 | Hermes 参考 | 本项目的教学实现与边界 |
