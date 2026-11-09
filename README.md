@@ -154,7 +154,7 @@ src/
   lab.ts        0～5 六个离线阶段验收场景
 ```
 
-[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md) · [Kimi](docs/07-kimi-provider.md) · [上下文压缩](docs/08-context-compression.md) · [L3 历史检索](docs/11-l3-history-retrieval.md)
+[文档导航](docs/README.md) · [架构](docs/01-architecture.md) · [Hermes 参考](docs/02-hermes-reference.md) · [学习路径](docs/03-learning-path.md) · [记忆与扩展](docs/04-memory-and-extensions.md) · [Gateway](docs/05-gateway.md) · [调试](docs/06-debugging.md) · [Kimi](docs/07-kimi-provider.md) · [上下文压缩](docs/08-context-compression.md) · [SQLite 表和索引设计](docs/10-memory-storage-reference.md) · [L3 历史检索](docs/11-l3-history-retrieval.md)
 
 运行数据默认存入 `.hermes-lab/`。用子命令的 `--home PATH` 或 `MY_HERMES_HOME` 隔离 profile；`config.json` 使用 `mode/providerMode/provider/model/baseUrl/maxSteps/contextChars/providerTimeoutMs/turnTimeoutMs/autoReflect/plugins` 等配置，命令行优先。`check/demo` 也读取所选 profile 的 mode，但始终用临时数据和离线 Provider，不加载其插件。
 

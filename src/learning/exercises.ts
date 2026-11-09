@@ -257,7 +257,7 @@ export function selectMemories(query: string, hits: MemoryHit[], limit: number):
   for (let start = 0; start < ranked.length;) {
     let end = start + 1;
     while (end < ranked.length && ranked[end].relevance === ranked[start].relevance
-        && ranked[end].live === ranked[start].live) end++;
+      && ranked[end].live === ranked[start].live) end++;
 
     const positions = new Map<string, number[]>();
     for (let index = start; index < end; index++) {
@@ -282,7 +282,18 @@ export function selectMemories(query: string, hits: MemoryHit[], limit: number):
 }
 export function sessionKey(_channel: string, _conversationId: string, _userId: string): string {
   // L4：将渠道、会话、用户三个维度编码成稳定且不易碰撞的会话键。
-  throw new ExerciseNotImplemented('L4: implement learning/exercises.ts sessionKey');
+
+  let sKey = ""
+
+  let terms: string[] = []
+
+  terms.push(_channel)
+  terms.push(_conversationId)
+  terms.push(_userId)
+
+  sKey = terms.join("%")
+
+  return sKey
 }
 export function reflect(_transcript: Message[]): string | null {
   // L5：仅从包含成功工具执行的完整轮次生成待审核 Skill 正文，其余情况返回 null。
