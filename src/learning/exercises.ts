@@ -7,6 +7,7 @@ import type { MemoryHit } from '../memory/store.js';
 import type { CompressionResult, CompressionRuntime } from '../core/compression/types.js';
 import { assembleSummary, buildSummaryPrompt, deterministicSummary, elide, redact, summaryMessage, withoutSummaries } from '../core/compression/text.js';
 import { messagesSize, planWindow, pruneHistory } from '../core/compression/window.js';
+import { json } from 'node:stream/consumers';
 
 /**
  * L1：执行一次用户任务中的“模型决策 → 工具执行 → 再次决策”循环。
@@ -291,7 +292,7 @@ export function sessionKey(_channel: string, _conversationId: string, _userId: s
   terms.push(_conversationId)
   terms.push(_userId)
 
-  sKey = terms.join("%")
+  sKey = JSON.stringify(terms)
 
   return sKey
 }
