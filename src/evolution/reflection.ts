@@ -76,9 +76,13 @@ export function reflectionMessages(transcript: Message[], maxChars: number, opti
   const records = transcript.map(message => {
     if (message.role === 'tool') {
       const result = JSON.parse(message.content) as { ok: boolean; error?: unknown; message?: unknown };
-      return { role: 'tool', call: ids.get(message.toolCallId!), ok: result.ok,
-        ...(!result.ok ? { text: redact(typeof result.message === 'string' ? result.message :
-          typeof result.error === 'string' ? result.error : 'Tool failed') } : {}) };
+      return {
+        role: 'tool', call: ids.get(message.toolCallId!), ok: result.ok,
+        ...(!result.ok ? {
+          text: redact(typeof result.message === 'string' ? result.message :
+            typeof result.error === 'string' ? result.error : 'Tool failed')
+        } : {})
+      };
     }
     const calls = message.toolCalls?.map(call => {
       const id = ids.size + 1;
@@ -94,14 +98,21 @@ export function reflectionMessages(transcript: Message[], maxChars: number, opti
   // 缩短文本摘录，始终保留合法 JSON 和完整调用链；链本身都放不下时跳过。
   for (let excerpt = 1200; excerpt >= 75; excerpt = Math.floor(excerpt / 2)) {
     const messages: Message[] = [
+      // 自进化prompt
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: JSON.stringify({ loadedSkills,
-        ...(options.previousExchange ? { previousExchange: {
-          user: elide(redact(options.previousExchange.user), excerpt),
-          assistant: elide(redact(options.previousExchange.assistant), excerpt),
-        } } : {}), records: records.map(record => typeof record.text !== 'string' ? record : {
-        ...record, text: elide(record.text, excerpt), truncated: record.text.length > excerpt,
-      }) }) },
+      {
+        role: 'user', content: JSON.stringify({
+          loadedSkills,
+          ...(options.previousExchange ? {
+            previousExchange: {
+              user: elide(redact(options.previousExchange.user), excerpt),
+              assistant: elide(redact(options.previousExchange.assistant), excerpt),
+            }
+          } : {}), records: records.map(record => typeof record.text !== 'string' ? record : {
+            ...record, text: elide(record.text, excerpt), truncated: record.text.length > excerpt,
+          })
+        })
+      },
     ];
     if (requestSize(messages, []) <= maxChars) return messages;
   }

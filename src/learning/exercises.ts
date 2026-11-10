@@ -311,6 +311,7 @@ export async function reflect(
 
   // 2. 复盘只有三个专用技能工具；不复用主任务的注册表，候选尚未落盘。
   const review = reviewTools(options.library), schemas = review.registry.schemas();
+  // 再这里插入的 自进化prompt
   const messages = reflectionMessages(transcript, maxInputChars - JSON.stringify(schemas).length, options);
   if (!messages) return null;
 
