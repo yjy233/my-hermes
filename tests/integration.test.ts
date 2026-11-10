@@ -9,25 +9,26 @@ import { DemoProvider } from '../src/core/providers.js';
 import { EvolutionManager } from '../src/evolution/manager.js';
 import { Gateway, type InboundMessage } from '../src/gateway/router.js';
 import { sessionKey } from '../src/learning/reference.js';
+import type { Mode } from '../src/learning/types.js';
 import { LongTermMemory } from '../src/memory/long-term.js';
 import { SessionStore } from '../src/memory/store.js';
 import { SkillCatalog } from '../src/skills/catalog.js';
 
-function fixture(t: TestContext, reflect = false) {
+function fixture(t: TestContext, reflect = false, mode: Mode = 'reference') {
   const root = mkdtempSync(join(tmpdir(), 'hermes-integration-'));
   const store = new SessionStore(join(root, 'sessions.db'));
   const memory = new LongTermMemory(join(root, 'memory'));
   const skills = new SkillCatalog([join(root, 'skills')]);
   skills.discover();
   const evolution = new EvolutionManager(join(root, 'proposals'), join(root, 'skills'));
-  const agent = new Agent({ provider: new DemoProvider(), store, memory, skills, evolution, autoReflect: reflect });
+  const agent = new Agent({ provider: new DemoProvider(), store, memory, skills, evolution, autoReflect: reflect, mode });
   const gateway = new Gateway(agent, store, sessionKey, new Set(['alice', 'bob']));
-  t.after(() => { gateway.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  t.after(() => { agent.close(); gateway.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
   const send = (eventId: string, text: string, userId = 'alice', conversationId = 'first') => {
     const message: InboundMessage = { eventId, channel: 'lab', conversationId, userId, text };
     return gateway.handle(message);
   };
-  return { store, memory, skills, evolution, gateway, send };
+  return { store, memory, skills, evolution, gateway, send, agent };
 }
 
 test('tool call IDs persist, memory is scoped, and existing prompt remains frozen', async (t) => {
@@ -52,10 +53,11 @@ test('tool call IDs persist, memory is scoped, and existing prompt remains froze
   assert.ok(store.search('我喜欢 TypeScript', scope).length);
 });
 
-test('successful reflection stays pending until approval, then new session sees reviewed Skill', async (t) => {
-  const { store, skills, evolution, send } = fixture(t, true);
+for (const mode of ['reference', 'learner'] as const) test(`${mode} reflection stays pending until approval, then new session sees reviewed Skill`, async (t) => {
+  const { store, skills, evolution, send, agent } = fixture(t, true, mode);
   const first = await send('calculate', '/calc 2+3');
   assert.equal(JSON.parse(first.text.slice(first.text.indexOf('{'))).ok, true);
+  await agent.waitForReflections();
   const proposals = evolution.listProposals();
   assert.equal(proposals.length, 1);
   assert.equal(proposals[0].status, 'pending');

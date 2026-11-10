@@ -21,11 +21,19 @@ for (const stage of [0, 1, 2, 3, 4, 5]) test(`stage ${stage} reference has named
   assert.equal(events.filter(event => event === 'case.passed').length, result.total);
 });
 
-for (const stage of [3, 5]) test(`stage ${stage} learner TODO is a named failure and never a reference pass`, async () => {
+for (const stage of [3, 5]) test(`stage ${stage} completed learner passes named contracts`, async () => {
   const result = await checkStage(stage, 'learner');
-  assert.equal(result.status, 'failed');
-  assert.ok(result.cases.some(item => item.error?.name === 'ExerciseNotImplemented'));
+  assert.equal(result.status, 'passed', JSON.stringify(result.cases));
+  assert.equal(result.passed, result.total);
   assert.ok(result.cases.every(item => item.name));
+});
+
+test('L5 checks call the selected implementation without falling back to reference', async () => {
+  const result = await checkStage(5, 'learner', {}, {
+    ...loadAlgorithms('learner'), reflect() { throw new ExerciseNotImplemented('L5'); },
+  });
+  assert.equal(result.failed, result.total);
+  assert.ok(result.cases.every(item => item.error?.name === 'ExerciseNotImplemented'));
 });
 
 test('learner memory stage passes both compression and recall contracts', async () => {
@@ -146,11 +154,11 @@ test('CLI --all reports all learner stages, emits trace on stderr and leaves the
       '--import', import.meta.resolve('tsx'), fileURLToPath(new URL('../src/cli.ts', import.meta.url)),
       'check', '--all', '--mode', 'learner', '--trace',
     ], { cwd: root, env: { ...process.env, MY_HERMES_HOME: home }, encoding: 'utf8', timeout: 15_000 });
-    assert.equal(child.status, 1, child.stderr);
+    assert.equal(child.status, 0, child.stderr);
     const reports = child.stdout.trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(reports.map(item => item.stage), [0, 1, 2, 3, 4, 5]);
-    assert.deepEqual(reports.map(item => item.status), ['passed', 'passed', 'passed', 'failed', 'passed', 'failed']);
-    assert.match(child.stderr, /case\.start/); assert.match(child.stderr, /case\.failed/);
+    assert.deepEqual(reports.map(item => item.status), Array(6).fill('passed'));
+    assert.match(child.stderr, /case\.start/); assert.match(child.stderr, /case\.passed/);
     assert.match(child.stderr, /L0/); assert.match(child.stderr, /L1/); assert.match(child.stderr, /L2/);
     assert.match(child.stderr, /L3/); assert.match(child.stderr, /L4/); assert.match(child.stderr, /L5/);
     assert.equal(existsSync(home), false);

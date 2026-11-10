@@ -377,7 +377,7 @@ test('reflection rejects orphaned and incomplete tool observations', () => {
   assert.equal(reflect([trace[0], trace[1], toolReply('{"ok":true}', 'wrong-id'), trace[3]]), null);
 });
 
-test('learner mode runs completed L1/L2/L3 while remaining exercises still reject without a fallback', async () => {
+test('learner mode runs all completed algorithms without a reference fallback', async () => {
   const learner = loadAlgorithms('learner');
   const completed = await learner.runLoop(scripted([{ content: 'learner works' }]),
     new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
@@ -385,8 +385,8 @@ test('learner mode runs completed L1/L2/L3 while remaining exercises still rejec
   const compressor = new ContextCompressor({ provider: scripted([]), maxChars: 1000, algorithm: learner.compactHistory });
   assert.deepEqual((await compressor.compress([{ role: 'system', content: 'x' }], [])).messages, [{ role: 'system', content: 'x' }]);
   assert.deepEqual(learner.selectMemories('query', [], 1), []);
-  assert.throws(() => learner.sessionKey('a', 'b', 'c'), /L4/);
-  assert.throws(() => learner.reflect([]), /L5/);
+  assert.equal(learner.sessionKey('a', 'b', 'c'), JSON.stringify(['a', 'b', 'c']));
+  assert.equal(await learner.reflect([], scripted([])), null);
   const reference = await loadAlgorithms('reference').runLoop(scripted([{ content: 'reference works' }]),
     new ToolRegistry(), [{ role: 'user', content: 'hello' }], 2, noop);
   assert.equal(reference[0].content, 'reference works');

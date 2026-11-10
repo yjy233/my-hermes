@@ -145,7 +145,7 @@ npm run build
 
 阶段 2 当前包含 26 项契约：原有 20 项加上 6 项 L3 进阶检索与窗口读取检查。运行 `npm run verify` 查看当前提交的类型检查、完整测试、reference 六阶段验收和构建结果；测试总数以本次实际输出为准。上述检查使用离线和本机协议测试，不调用真实 Kimi 服务。
 
-完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。当前 L0～L3 已完成，L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`。阶段 1 可独立用 `check --stage 1 --mode learner --trace` 阅读与调试；完整 learner 聊天仍需 L4，阶段 2 可验收 L2/L3，下一步实现阶段 3 的 L4。阶段 4 只是扩展基线，不能自动验证任意自定义插件。
+完成练习后运行 `npm run dev -- check --all --mode learner`。全部六阶段 0～5 都会输出结果，前面的失败不阻止后续；任何失败使退出码非零。当前 L0～L5 已完成，六阶段都应通过。阶段 1 可独立用 `check --stage 1 --mode learner --trace` 阅读与调试；完整 learner 聊天已可运行，阶段 2 验收 L2/L3，阶段 3 验收 L4，阶段 5 验收 L5。阶段 4 只是扩展基线，不能自动验证任意自定义插件。
 
 `npm test` 验证基础设施、参考实现和已实现学习算法的回归；learner 检查直接调用学习者代码，两项分别验收。根据具体任务补充边界案例，不以默认测试通过代替练习完成。中断/超时能传播取消，不能回滚已发生的副作用，忽略 signal 的代码还可能继续；重试前检查实际结果。
 
@@ -153,7 +153,7 @@ npm run build
 
 | 现象 | 首先检查 |
 | --- | --- |
-| ExerciseNotImplemented | 检查 L4/L5；L0～L3 已实现，完整聊天仍可选参考 Core |
+| ExerciseNotImplemented | L0～L5 已实现；检查是否运行旧代码或重新置空了某个练习 |
 | Kimi key / HTTP 401 | MOONSHOT_API_KEY/KIMI_API_KEY、区域平台、模型权限，不使用 OpenAI key 兜底 |
 | 更新 .env 后没生效 | shell 环境变量优先；确认运行目录或 --env-path 路径 |
 | 工具第二轮丢上下文 | reasoningContent 与 toolCalls 是否完整保存、持久化并转换回 wire 字段 |

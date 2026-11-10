@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { calculate } from '../core/builtin-tools.js';
 import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
 import { type Emit, type Message, type ModelResponse, type Provider } from '../core/models.js';
+import { DemoProvider } from '../core/providers.js';
 import { ToolRegistry } from '../core/tools.js';
 import type { Algorithms } from '../learning/types.js';
 import { SessionStore, type MemoryHit } from '../memory/store.js';
@@ -251,43 +252,45 @@ function routingCases(algorithms: Algorithms): StageCase[] {
 }
 
 function evolutionCases(algorithms: Algorithms): StageCase[] {
+  const provider = new DemoProvider();
   return [
-    { name: 'L5/successful-procedure', run() {
-      const body = algorithms.reflect(successfulTrace());
+    { name: 'L5/successful-procedure', async run(signal) {
+      const draft = await algorithms.reflect(successfulTrace(), provider, { signal });
+      const body = typeof draft === 'string' ? draft : draft?.content;
       assert.equal(typeof body, 'string');
       assert.ok(body, 'A successful complete tool trace produces a reviewable candidate');
       assert.ok(body.trim(), 'Candidate body cannot contain only whitespace');
       assert.ok(!body.includes('never-copy-this-private-value'), 'Do not copy raw private arguments into a reusable Skill');
     } },
-    { name: 'L5/pure-chat', run() {
-      assert.equal(algorithms.reflect([{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }]), null);
+    { name: 'L5/pure-chat', async run(signal) {
+      assert.equal(await algorithms.reflect([{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }], provider, { signal }), null);
     } },
-    { name: 'L5/failed-tool', run() {
+    { name: 'L5/failed-tool', async run(signal) {
       const trace = successfulTrace();
       trace[2].content = '{"ok":false,"error":"Failure"}';
-      assert.equal(algorithms.reflect(trace), null);
+      assert.equal(await algorithms.reflect(trace, provider, { signal }), null);
     } },
-    { name: 'L5/malformed-tool-result', run() {
+    { name: 'L5/malformed-tool-result', async run(signal) {
       const trace = successfulTrace();
       trace[2].content = 'not-json';
-      assert.equal(algorithms.reflect(trace), null);
+      assert.equal(await algorithms.reflect(trace, provider, { signal }), null);
     } },
-    { name: 'L5/pending-tool-turn', run() {
-      assert.equal(algorithms.reflect(successfulTrace().slice(0, 2)), null);
+    { name: 'L5/pending-tool-turn', async run(signal) {
+      assert.equal(await algorithms.reflect(successfulTrace().slice(0, 2), provider, { signal }), null);
     } },
-    { name: 'L5/orphan-tool-result', run() {
+    { name: 'L5/orphan-tool-result', async run(signal) {
       const trace = successfulTrace();
-      assert.equal(algorithms.reflect([trace[2], trace[3]]), null);
+      assert.equal(await algorithms.reflect([trace[2], trace[3]], provider, { signal }), null);
     } },
-    { name: 'L5/missing-tool-result', run() {
+    { name: 'L5/missing-tool-result', async run(signal) {
       const trace = successfulTrace();
       trace[1].toolCalls!.push({ id: 'missing', name: 'second_tool', arguments: {} });
-      assert.equal(algorithms.reflect(trace), null);
+      assert.equal(await algorithms.reflect(trace, provider, { signal }), null);
     } },
-    { name: 'L5/wrong-tool-result-id', run() {
+    { name: 'L5/wrong-tool-result-id', async run(signal) {
       const trace = successfulTrace();
       trace[2].toolCallId = 'wrong';
-      assert.equal(algorithms.reflect(trace), null);
+      assert.equal(await algorithms.reflect(trace, provider, { signal }), null);
     } },
   ];
 }

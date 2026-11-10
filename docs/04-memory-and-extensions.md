@@ -38,7 +38,7 @@ L3 `selectMemories` 已在 learner 实现，运行链路是 `history_search → 
 
 长正文可用 `around_message_id + limit: 1 + content_offset` 续读，`content_chars` 默认 2000、范围 1～6000。按响应中的 `nextContentOffset` 请求下一段；offset 按 JavaScript UTF-16 字符单位计数，不能切开代理对。窗口只返回历史数据，旧工具参数与 reasoning 不会作为新指令重放给模型；完整协议字段仍保留在数据库及 `readHistory` 库 API 中。目标会话必须属于当前 scope，锚点还必须属于该会话。
 
-历史原文在模型主动调用工具后进入下一次请求。离线 Demo 的 `/recall 关键词` 演示搜索；`npm run learn:recall` 演示搜索、窗口与翻页，[L3 教程](11-l3-history-retrieval.md) 讲解具体断点。`npm run dev -- check --stage 2 --mode learner` 运行 26 项 L2/L3 验收；完整 learner CLI 聊天仍需实现 L4 路由。`tests/recall.test.ts` 保留原有压缩、重启与隔离回归，新增 `tests/history-search.test.ts`、`tests/l3-ranking.test.ts` 和 `tests/recall-upgrade.test.ts` 覆盖候选索引、排序和搜索后读取的链路。
+历史原文在模型主动调用工具后进入下一次请求。离线 Demo 的 `/recall 关键词` 演示搜索；`npm run learn:recall` 演示搜索、窗口与翻页，[L3 教程](11-l3-history-retrieval.md) 讲解具体断点。`npm run dev -- check --stage 2 --mode learner` 运行 26 项 L2/L3 验收；L4 路由已完成，可以直接使用 learner CLI 聊天。`tests/recall.test.ts` 保留原有压缩、重启与隔离回归，新增 `tests/history-search.test.ts`、`tests/l3-ranking.test.ts` 和 `tests/recall-upgrade.test.ts` 覆盖候选索引、排序和搜索后读取的链路。
 
 ## 长期记忆条目与整理
 
@@ -87,9 +87,77 @@ Plugin 拥有当前 Node 进程权限，这些注册接口不是沙箱。同步�
 
 ## 自进化闭环
 
-`EvolutionManager.propose(sessionId, content)` 写入 `proposals/<id>.json`，状态 pending；`listProposals()` 用于审阅；本地 `approve(id, name, description)` 提升到 `skills/<name>/SKILL.md` 并写 approved 状态。候选不提前进入索引，提升保留来源信息。
+开启 `--auto-reflect` 后，learner 会在答复持久化后排入后台复盘队列。`Agent.run()` 不再等待模型复盘；下一轮事件循环才启动后台请求，Gateway 的答复缓存先完成。reference 保留旧的规则模板作教学对照，但也使用这套后台调度。默认不开启自动复盘。
 
-参考反思只为成功工具流程生成保守建议，默认不复制私密参数。请实际阅读正文后批准；框架拒绝重名覆盖和重复批准，不自动修改源码、权重或现有技能。候选是可审核的程序性知识草稿，不代表已通过效果评测。
+```mermaid
+flowchart TD
+  A[主任务结束并保存对话] --> B[排入后台队列]
+  B --> C[返回答复]
+  B --> D[空闲时启动独立复盘]
+  D --> E[检查完整轮次并构造脱敏 Prompt]
+  E --> F[模型判断是否有可复用经验]
+  F --> G[skills_list 查看已有技能]
+  G --> H[skill_view 读取相关技能]
+  H --> I[skill_manage 提出更新]
+  G --> J[没有合适技能时提出新建]
+  I --> K[保存 pending 候选]
+  J --> K
+  K --> L[人工批准后写入 Skill]
+```
+
+### 从什么内容学习
+
+`reviewableTurn` 只检查结构完整性：user 开始、assistant 最终答复结束，工具调用 ID 唯一且结果完整配对，工具结果是带布尔 `ok` 的合法 JSON。失败结果不再被一律丢弃，无工具的用户纠正也能进入模型复盘。
+
+模型看到当前轮次和可选的上一轮用户/助手摘录，因此可以理解“以后先给代码”等反馈针对什么回答。普通闲聊、没有新经验、只有失败而没有依据支持修复时可以返回 null。Prompt 要求区分失败尝试和已验证修复，不把失败路径当作最佳实践；判断质量仍取决于模型和人工审核。
+
+原始工具参数、成功结果正文、原对话的思考内容不直接发送；调用 ID 改为序号，失败结果保留脱敏的错误摘录。用户/助手文本会做常见凭证脱敏与长度限制，但可能复述私人数据，因此不是完整匿名化。复盘模型自身产生的 `reasoningContent` 只用于后续请求的协议接续，不进入候选或原始会话。
+
+### 优先改进已有 Skill
+
+复盘使用独立注册表，只包含三个工具：
+
+| 工具 | 作用 |
+| --- | --- |
+| `skills_list` | 列出当前 profile 的技能；新建前必须先查询 |
+| `skill_view` | 重新读取某个技能的完整内容，内部记住 SHA-256 版本 |
+| `skill_manage` | `create` 返回新候选正文；`update` 返回目标名、整合后的正文和读取版本 |
+
+模型优先检查当前任务使用过的技能，其次查找同类技能，再考虑新建。更新必须在前一次模型请求中已经读取目标；同一响应同时声明读取和更新会被拒绝，因为模型尚未观察读取结果。过大的技能不能把截断正文当作完整读取。复盘不开放终端、长期记忆写入或批准工具。
+
+`reflect` 返回 `string | SkillUpdate | null`：字符串表示新建候选，`SkillUpdate` 表示更新，null 表示跳过。工具执行期间只在内存中暂存建议；只有完整复盘完成且未取消，Agent 才调用 `EvolutionManager.propose()` 落盘。
+
+新建与更新都写到 `proposals/<id>.json`，先处于 pending 状态。更新候选另外保存 `skillName`、`baseHash` 和 `previousContent`，可用 `evolve show ID` 对照旧内容和建议正文。创建候选时与批准时都会重读目标校验版本，检测到人工修改或其他更新就报冲突，保留 pending，要求重新复盘。批准更新保留原 frontmatter，并更新来源信息；只操作当前 profile 下的技能，不修改内置或外部目录。
+
+```sh
+# 首次运行产生新建候选，答复先打印，正常退出前等待后台候选落盘。
+npm run dev -- chat --provider demo --mode learner --message '/calc 6*7' --auto-reflect
+npm run dev -- evolve list
+npm run dev -- evolve show NEW_ID
+npm run dev -- evolve approve NEW_ID --name verified-calculation --description '核验计算流程'
+
+# 再运行同类任务，离线模型会读取已有技能并提出更新。
+npm run dev -- chat --provider demo --mode learner --message '/calc 7*8' --auto-reflect
+npm run dev -- evolve list
+npm run dev -- evolve show UPDATE_ID
+npm run dev -- evolve approve UPDATE_ID
+```
+
+替换示例中的 ID 后执行。新建仍需指定名称和描述，重名时不会覆盖；更新直接使用候选绑定的名称，不能改名。新会话会刷新技能索引，已有会话的 system 保持冻结。
+
+### 调度、预算与退出
+
+每个 Agent 最多同时复盘一个会话，待执行队列最多 32 个会话；同会话的新任务替换未开始的旧复盘，容量不足时丢弃最旧的待执行任务。任何新的前台任务开始时都会取消正在执行的复盘，优先服务用户。后台失败不回滚已保存答复；队列为尽力执行，不跨进程持久化。
+
+默认整个复盘最多 5 次模型请求、总超时 10 秒，每次请求最多 12000 字符（包括工具 schema），候选最多 6000 字符。输入摘录可缩短，调用链和 JSON 结构保持完整；技能读取后的累计上下文若超限，就停止复盘。工具错误可以在剩余步数内纠正；Provider 错误或超时不自动重试。`AgentOptions.reflection` 可调整 `timeoutMs`、`maxInputChars`、`maxSteps`，CLI 当前使用默认预算。
+
+后台使用独立取消信号；新前台任务或 `Agent.close()` 会取消它，迟到响应不能写候选。库调用方可用 `await agent.waitForReflections()` 等待已有后台任务结束，在关闭 SQLite 前调用 `agent.close()`。CLI 单次聊天和 JSONL 正常结束时，会先输出答复再等待剩余复盘；中断或 HTTP 服务关闭时取消后台任务。`--trace` 可观察 `evolution.started/proposed/skipped/cancelled/error`，错误事件只记录类型。
+
+### 与 Hermes 的对应和差距
+
+本机 Hermes 的 `agent/background_review.py` 和 `agent/turn_finalizer.py` 同样支持任务后的后台复盘、用户纠正、失败修复经验、优先更新已有技能和更新前读取。本项目独立实现这些机制，没有引用上游代码。
+
+Hermes 还支持主任务主动调用 `skill_manage`、更广的技能目录和支持文件操作、可配置写入审核，以及 curator 定期整理。本项目目前仅在复盘中开放精简的技能工具，始终先生成待审候选，没有实现自动批准、curator 或跨重启后台任务恢复。Skill 是可审核的程序性知识，不修改模型权重或项目源码，也不代表已经通过效果评测。
 
 ## 调试建议
 
@@ -99,6 +167,6 @@ Plugin 拥有当前 Node 进程权限，这些注册接口不是沙箱。同步�
 4. 让插件重复注册工具，观察初始化直接报错。
 5. 对比待审和批准后的索引，确认模型没有批准接口。
 
-运行 `npm test` 验证持久化、隔离、路径边界、扩展注册和审核；`npm run dev -- check --stage 4` / `--stage 5 --mode reference` 可单独检查扩展与自进化闭环。
+运行 `npm test` 验证持久化、隔离、路径边界、扩展注册和审核；`npm run dev -- check --stage 4` / `--stage 5 --mode learner` 可单独检查扩展与自进化闭环。`tests/learner-reflection.test.ts` 覆盖输入预算与异常边界；`tests/evolution-review.test.ts` 覆盖后台优先级、纠正学习、读取后更新和过期版本冲突；CLI 与集成测试验证新建、更新和批准后的新会话。
 
 构建时还会将示例插件编译到 `dist/examples/plugins/word-count.js`，可直接供编译后的 CLI 加载。使用已安装 npm 包时，选择这个 JavaScript 入口；Node 不会对 `node_modules` 内的 TypeScript 文件执行内置类型擦除。仓库开发流程仍使用 `examples/plugins/word-count.ts`。

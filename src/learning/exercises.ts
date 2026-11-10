@@ -1,13 +1,14 @@
-/** L1～L3 是运行时实际调用的学习实现；L4/L5 保留为练习。 */
-import { abortable } from '../core/async.js';
-import { ExerciseNotImplemented, StepLimitExceeded } from '../core/errors.js';
+/** L1～L5 都是 learner 模式实际调用的实现，可与 reference 模式逐项对照。 */
+import { abortable, withTimeout } from '../core/async.js';
+import { StepLimitExceeded } from '../core/errors.js';
 import { requestSize, validateModelResponse, type Emit, type Message, type Provider, type ToolSchema } from '../core/models.js';
 import type { ToolRegistry } from '../core/tools.js';
 import type { MemoryHit } from '../memory/store.js';
 import type { CompressionResult, CompressionRuntime } from '../core/compression/types.js';
 import { assembleSummary, buildSummaryPrompt, deterministicSummary, elide, redact, summaryMessage, withoutSummaries } from '../core/compression/text.js';
 import { messagesSize, planWindow, pruneHistory } from '../core/compression/window.js';
-import { json } from 'node:stream/consumers';
+import { reviewTools } from '../evolution/review-tools.js';
+import { reflectionBody, reflectionMessages, reviewableTurn, type ReflectionOptions, type ReflectionResult } from '../evolution/reflection.js';
 
 /**
  * L1：执行一次用户任务中的“模型决策 → 工具执行 → 再次决策”循环。
@@ -296,7 +297,61 @@ export function sessionKey(_channel: string, _conversationId: string, _userId: s
 
   return sKey
 }
-export function reflect(_transcript: Message[]): string | null {
-  // L5：仅从包含成功工具执行的完整轮次生成待审核 Skill 正文，其余情况返回 null。
-  throw new ExerciseNotImplemented('L5: implement learning/exercises.ts reflect');
+export async function reflect(
+  transcript: Message[], provider: Provider, options: ReflectionOptions = {},
+): Promise<ReflectionResult> {
+  // 1. 检查轮次完整性，不再把失败尝试和无工具的用户纠正一律丢掉。
+  options.signal?.throwIfAborted();
+  const timeoutMs = options.timeoutMs ?? 10_000, maxInputChars = options.maxInputChars ?? 12_000;
+  const maxSteps = options.maxSteps ?? 5;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647 ||
+    !Number.isSafeInteger(maxInputChars) || maxInputChars < 1 ||
+    !Number.isSafeInteger(maxSteps) || maxSteps < 1 || maxSteps > 8) throw new Error('Invalid reflection budget');
+  if (!reviewableTurn(transcript)) return null;
+
+  // 2. 复盘只有三个专用技能工具；不复用主任务的注册表，候选尚未落盘。
+  const review = reviewTools(options.library), schemas = review.registry.schemas();
+  const messages = reflectionMessages(transcript, maxInputChars - JSON.stringify(schemas).length, options);
+  if (!messages) return null;
+
+  // 3. 总超时覆盖整个“列出 → 读取 → 提议”循环，而不是每步重新计时。
+  return withTimeout(async signal => {
+    const callIds = new Set<string>();
+    for (let step = 0; step < maxSteps; step++) {
+      signal.throwIfAborted();
+      if (requestSize(messages, schemas) > maxInputChars) throw new Error('Reflection context budget exceeded');
+      const response = await abortable(provider.complete(structuredClone(messages), schemas, signal), signal);
+      signal.throwIfAborted();
+      validateModelResponse(response);
+      if (!response.toolCalls?.length) {
+        const body = reflectionBody(response.content);
+        // 有技能库时必须通过技能工具提议，避免跳过读取而把旧技能误当作新建。
+        if (body && options.library) throw new Error('Use skill_manage to propose a candidate');
+        return body;
+      }
+      // 没有技能库时， reflection 仍然可以通过工具调用提议，但不允许使用 skill_manage。
+      if (!options.library) throw new Error('Reflection cannot request tools without a skill library');
+
+      if (response.toolCalls.filter(call => call.name === 'skill_manage').length > 1) {
+        throw new Error('Only one skill_manage call per response');
+      }
+      if (response.toolCalls.some(call => call.name === 'skill_manage') &&
+        response.toolCalls.some(call => call.name === 'skill_view' || call.name === 'skills_list')) {
+        throw new Error('Observe skill lookup results in an earlier model step before proposing changes');
+      }
+      // 4. 先把 assistant 消息和工具结果都写进上下文，下一轮模型才能看到完整的历史。
+      messages.push({
+        role: 'assistant', content: response.content, toolCalls: response.toolCalls,
+        ...(response.reasoningContent !== undefined ? { reasoningContent: response.reasoningContent } : {}),
+      });
+      for (const call of response.toolCalls) {
+        if (callIds.has(call.id)) throw new Error('Duplicate reflection tool call ID');
+        callIds.add(call.id);
+        messages.push(await review.registry.execute(call, signal));
+      }
+      signal.throwIfAborted();
+      if (review.draft() !== null) return review.draft();
+    }
+    throw new Error('Reflection step limit exceeded');
+  }, timeoutMs, options.signal);
 }

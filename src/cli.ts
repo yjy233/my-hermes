@@ -161,9 +161,11 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     } else {
       const evolution = new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills'));
       if (action === 'approve') {
-        const name = requirePosition(values.name, '--name'), description = requirePosition(values.description, '--description');
-        if (catalogFor(settings).skills.has(name)) throw new Error(`Skill already exists: ${name}`);
-        console.log(evolution.approve(requirePosition(id, 'Proposal ID'), name, description));
+        const proposalId = requirePosition(id, 'Proposal ID'), proposal = evolution.get(proposalId);
+        const name = proposal.action === 'update' ? values.name : requirePosition(values.name, '--name');
+        const description = proposal.action === 'update' ? values.description : requirePosition(values.description, '--description');
+        if (proposal.action !== 'update' && catalogFor(settings).skills.has(name!)) throw new Error(`Skill already exists: ${name}`);
+        console.log(evolution.approve(proposalId, name, description));
       } else if (action === 'list') print(evolution.listProposals());
       else if (action === 'show') {
         const proposal = evolution.listProposals().find(item => item.id === requirePosition(id, 'Proposal ID'));
@@ -173,7 +175,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     return;
   }
   const lock = command === 'chat' || command === 'gateway' ? new ProfileLock(settings.home).acquire() : undefined;
-  let store: SessionStore | undefined, gateway: Gateway | undefined;
+  let store: SessionStore | undefined, gateway: Gateway | undefined, agent: Agent | undefined;
   try {
     initializeProfile(settings);
     store = new SessionStore(resolve(settings.home, 'sessions.db'));
@@ -194,7 +196,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       print(store.loadMessages(sessionId)); return;
     }
     const provider = createProvider(settings);
-    const agent = new Agent({ provider, store, memory: new LongTermMemory(resolve(settings.home, 'memory')),
+    agent = new Agent({ provider, store, memory: new LongTermMemory(resolve(settings.home, 'memory')),
       skills: catalogFor(settings), mode: settings.mode, maxSteps: settings.maxSteps, contextChars: settings.contextChars,
       compression: { ...settings.compression, memoryFlush: settings.compressionMemoryFlush },
       summaryProvider: settings.compression.summaryModel ? createProvider({ ...settings, model: settings.compression.summaryModel }) : undefined,
@@ -203,13 +205,17 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       emit: values.trace ? traceWriter(settings.home) : undefined });
     gateway = new Gateway(agent, store, loadAlgorithms(settings.mode).sessionKey,
       values['allow-user'] ? new Set(values['allow-user']) : undefined);
-    if (command === 'chat') { await chat(gateway, values, signal); return; }
+    if (command === 'chat') {
+      await chat(gateway, values, signal); // 答复先打印；正常退出前等待最后一次复盘落盘。
+      await agent.waitForReflections(signal);
+      return;
+    }
     const connector = values.connector ?? 'jsonl';
     if (connector === 'jsonl') {
       const { runJsonl } = await import('./connectors/jsonl.js');
       const stop = () => { process.stdin.destroy(); };
       signal.addEventListener('abort', stop, { once: true });
-      try { await runJsonl(gateway, process.stdin, process.stdout); signal.throwIfAborted(); }
+      try { await runJsonl(gateway, process.stdin, process.stdout); await agent.waitForReflections(signal); signal.throwIfAborted(); }
       finally { signal.removeEventListener('abort', stop); }
     } else if (connector === 'http') {
       const { createHttpServer } = await import('./connectors/http.js');
@@ -229,7 +235,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
         if (signal.aborted) stop();
       });
     } else throw new Error('connector must be jsonl or http');
-  } finally { gateway?.close(); store?.close(); lock?.release(); }
+  } finally { agent?.close(); gateway?.close(); store?.close(); lock?.release(); }
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {

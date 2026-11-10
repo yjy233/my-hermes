@@ -11,6 +11,8 @@ import type { LongTermMemory, SessionStore } from '../memory/index.js';
 import type { SkillCatalog } from '../skills/catalog.js';
 import { PluginManager } from '../plugins/manager.js';
 import type { EvolutionManager } from '../evolution/manager.js';
+import type { ReflectionOptions } from '../evolution/reflection.js';
+import { BackgroundReviews } from '../evolution/background.js';
 import { ContextEngine, resolveCompressionOptions, type CompressionOptions } from './context-engine.js';
 import { flushLongTermMemory } from './memory-flush.js';
 
@@ -20,12 +22,14 @@ export interface AgentOptions {
   plugins?: string[]; evolution?: EvolutionManager; autoReflect?: boolean; emit?: Emit;
   compression?: Partial<CompressionSettings> & CompressionOptions;
   summaryProvider?: Provider;
+  reflection?: Pick<ReflectionOptions, 'timeoutMs' | 'maxInputChars' | 'maxSteps'>;
   /** 默认采用异步 L2；checkpoint 保留合并前的摘要引擎 API，不能叠加两套压缩。 */
   contextEngine?: 'hermes' | 'checkpoint';
 }
 
 export class Agent {
   private readonly mutex = new KeyedMutex();
+  private readonly reviews = new BackgroundReviews();
   private readonly algorithms: Algorithms;
   private readonly maxSteps: number;
   private readonly contextChars: number;
@@ -50,9 +54,16 @@ export class Agent {
   }
   async run(key: string, scope: string, text: string, signal?: AbortSignal): Promise<string> {
     if (typeof text !== 'string' || !text.trim() || text.length > 16_000) throw new Error('Message must contain 1..16000 characters');
-    return this.mutex.run(key, () => withTimeout(turnSignal => this.runTurn(key, scope, text, turnSignal),
-      this.turnTimeoutMs, signal), signal);
+    return this.mutex.run(key, async () => {
+      this.reviews.beginTurn(key);
+      try { return await withTimeout(turnSignal => this.runTurn(key, scope, text, turnSignal), this.turnTimeoutMs, signal); }
+      finally { this.reviews.endTurn(); }
+    }, signal);
   }
+
+  /** CLI 在打印答复后可等待候选落盘；服务关闭时先 close，再关闭 SQLite。 */
+  waitForReflections(signal?: AbortSignal): Promise<void> { return this.reviews.idle(signal); }
+  close(): void { this.reviews.close(); }
   private async runTurn(key: string, scope: string, text: string, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     const { store, memory, skills } = this.options;
@@ -152,10 +163,25 @@ export class Agent {
     }
     emit('turn.persisted', { newMessages: delta.length + 1 });
     if (this.options.autoReflect && this.options.evolution) {
-      try {
-        const body = this.algorithms.reflect([user, ...delta]);
-        if (body) emit('evolution.proposed', { proposalId: this.options.evolution.propose(session.id, body) });
-      } catch (error) { emit('evolution.error', { error: error instanceof Error ? error.name : 'Error' }); }
+      const transcript = structuredClone([user, ...delta]);
+      const previousUser = history.findLast(row => row.role === 'user' && !row.contextSummary);
+      const previousAnswer = history.findLast(row => row.role === 'assistant' && !row.toolCalls?.length && !row.contextSummary);
+      const previousExchange = previousUser && previousAnswer ? { user: previousUser.content, assistant: previousAnswer.content } : undefined;
+      const evolution = this.options.evolution;
+      this.reviews.enqueue(key, async reviewSignal => {
+        emit('evolution.started', {});
+        try {
+          const draft = await this.algorithms.reflect(transcript, this.options.provider, {
+            maxInputChars: Math.min(this.contextChars, 12_000), ...this.options.reflection,
+            signal: reviewSignal, previousExchange, library: evolution.library(),
+          });
+          reviewSignal.throwIfAborted();
+          if (draft) emit('evolution.proposed', { proposalId: evolution.propose(session.id, draft) });
+          else emit('evolution.skipped', {});
+        } catch (error) {
+          emit(reviewSignal.aborted ? 'evolution.cancelled' : 'evolution.error', { error: error instanceof Error ? error.name : 'Error' });
+        }
+      });
     }
     return delta.at(-1)!.content;
   }

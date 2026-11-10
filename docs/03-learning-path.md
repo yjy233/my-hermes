@@ -1,6 +1,6 @@
 # 分阶段学习与实现
 
-读完 [架构](01-architecture.md)，先阅读已完成的 Kimi 连接 L0 和 `src/learning/exercises.ts` 中带中文注释的 L1 runLoop、L2 compactHistory、L3 selectMemories，再实现 L4/L5。已完成的主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
+读完 [架构](01-architecture.md)，先阅读已完成的 Kimi 连接 L0 和 `src/learning/exercises.ts` 中带中文注释的 L1 runLoop、L2 compactHistory、L3 selectMemories，再阅读已接通的 L4 会话键和 L5 模型反思。已完成的主实现、外围基础设施与阶段回归均可运行；对照代码在 `kimi-reference.ts` 和 `learning/reference.ts`。
 
 ```sh
 npm install
@@ -9,7 +9,7 @@ npm run check -- --all --mode reference
 npm run dev -- check --stage 0 --mode learner
 ```
 
-以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`；阶段 1/2 的 learner 也应通过。L4/L5 未实现时明确失败，不回退到答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
+以上命令都应成功：阶段 0 验收已经完成的 Kimi 主实现，也可直接运行 `npm run kimi:check`；learner 的阶段 1～5 也应通过，检查不会回退到参考答案。`demo --stage N` 和 `check` 使用同一离线场景，不需要模型凭证。
 
 `check/demo` 的 mode 优先级为命令行 `--mode` → 所选 profile 的 `config.json` → 默认 `reference`。profile 由 `--home` 或 `MY_HERMES_HOME` 选择。检查只读取配置，运行数据放临时目录，不初始化日常 profile，不调用其真实模型，也不加载其插件。
 
@@ -22,7 +22,7 @@ npm run dev -- check --stage 0 --mode learner
 | 2 Memory | L2 异步 `compactHistory`、L3 `selectMemories` | `src/learning/exercises.ts`、`src/core/compression/`、`src/memory/history-search.ts`、`src/core/history-tools.ts` | 26 项：摘要与失败恢复、FTS/中文回退、BM25/去重、原文窗口、分页和隔离 | `check --stage 2 --mode learner` |
 | 3 Gateway | L4 `sessionKey` | `src/learning/exercises.ts`、`src/gateway/router.ts` | 三维路由稳定无碰撞、同事件只执行一次、用户隔离 | `check --stage 3 --mode learner` |
 | 4 Extensions | 无必填算法；扩展自己的实例 | `src/skills/catalog.ts`、`src/plugins/manager.ts` | 内置 Skill 按需读取、测试插件注册/执行与扩展边界 | `check --stage 4 --mode learner` |
-| 5 Evolution | L5 `reflect` | `src/learning/exercises.ts`、`src/evolution/manager.ts` | 成功轨迹生成候选，纯聊天/失败/未完成轨迹不生成，批准后才可发现 | `check --stage 5 --mode learner` |
+| 5 Evolution | L5 `reflect` | `src/learning/exercises.ts`、`src/evolution/manager.ts` | 完整轮次后台复盘、先读后更新、候选批准后生效 | `check --stage 5 --mode learner` |
 
 表中命令加前缀 `npm run dev --`。阶段检查调用选中 mode 的真实算法，每个具名 case 检查一个成功或边界契约；阶段 0 直接验收 Kimi Provider，阶段 1～5 验收对应算法与框架。可以单独做任一阶段，不依赖其他阶段练习。阶段 4 验收提供的扩展基线，不调用五个学习算法，因此空练习也能通过；它不会自动证明你任意新增的插件正确，新增工具仍需自己的输入、输出与失败案例。
 
@@ -52,15 +52,15 @@ npm 默认还会显示脚本启动信息；需要机器逐行解析 JSON 时，�
 npm run dev -- check --all --mode learner
 ```
 
-即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`：阶段 0/1/2 是已完成主实现，阶段 4 是扩展基线，其余失败明确保留练习，没有使用参考算法兜底。
+即使前面阶段失败，仍会报告全部六个阶段；任一阶段失败，退出码非零。当前 learner 的六阶段状态应全部为 passed，阶段 4 是扩展基线。任何学习实现被改坏后都会直接报告失败，不使用参考算法兜底。
 
-L1～L3 已完成，但完整 `chat --mode learner` 仍需补齐 L4；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；召回失败会形成工具错误供模型处理。可用 `--mode reference` 运行完整系统，下一步独立实现阶段 3 的 L4。
+L1～L5 已完成，完整 `chat --mode learner` 可以运行；`/recall` 调用 L3，`--auto-reflect` 才调用 L5。辅助反思失败不会撤销已保存答复；召回失败会形成工具错误供模型处理。也可用 `--mode reference` 对照完整系统；该模式的 L5 仍是同步规则模板，learner 的 L5 才实际请求 Provider。
 
 ## 阶段 0：Kimi 模型连接（L0）
 
 `src/core/providers/kimi.ts` 的 `KimiProvider.complete(messages, tools, signal?)` 已实现，返回 `Promise<ModelResponse>`，不依赖对照版兜底。通过 [Kimi 专题](07-kimi-provider.md) 阅读请求、响应、工具、推理字段与取消；本机 mock 回归不需要真实 key，也不调用在线服务。
 
-`check --stage 0 --mode learner/reference` 分别检查已完成主实现或对照版，与运行时 --provider-mode 分开。根目录 `.env` 填入密钥后，可用 `npm run kimi:doctor` 检查配置，再由你执行 `npm run kimi:test` 或 `npm run kimi:chat`；这些真实调用使用参考 Core，L4/L5 未完成也可运行。阶段回归本身始终离线。
+`check --stage 0 --mode learner/reference` 分别检查已完成主实现或对照版，与运行时 --provider-mode 分开。根目录 `.env` 填入密钥后，可用 `npm run kimi:doctor` 检查配置，再由你执行 `npm run kimi:test` 或 `npm run kimi:chat`；这些快捷脚本使用参考 Core，也可直接调用 CLI 并选择 learner。阶段回归本身始终离线。
 
 K3.1 Pro 的 `reasoning_content` 必须映射成内部 reasoningContent 并随完整 assistant 历史往返；最终 CLI 只显示 content，不能把推理内容拼到用户答复或 trace。检查预算、错误脱敏与工具 ID 配对，完整契约见专题。
 
@@ -89,7 +89,7 @@ runLoop(provider, registry, messages, maxSteps, emit, signal?): Promise<Message[
 npm run dev -- check --stage 1 --mode learner --trace
 ```
 
-当前阶段 1 的 9 个具名回归均应通过；可以在 text/tool 共存、context/delta 更新、结果 ID 配对和取消检查处设置断点。L1 通过后阅读 L2/L3，再实现 L4；阶段 1/2 通过不代表完整 learner 聊天已经可用。
+当前阶段 1 的 9 个具名回归均应通过；可以在 text/tool 共存、context/delta 更新、结果 ID 配对和取消检查处设置断点。L1 通过后阅读 L2/L3，再跟进 L4/L5；单阶段验收只检查该阶段，完整链路还需集成测试。
 
 离线验收 `/calc (2+3)*4` 应产生 calculator 调用、`{"ok":true,"result":20}` 的工具返回，再得到最终文本。主动测试未知工具、非法表达式、超时、重复 ID、模型持续请求工具等情况。Registry 会把普通工具失败包装为 `ok: false`，让模型观察错误后继续决策；取消应保留取消语义。
 
@@ -136,7 +136,7 @@ npm run dev -- check --stage 2 --mode learner --trace --debug
 
 ## 阶段 3：Gateway 路由（L4）
 
-实现 `sessionKey(channel, conversationId, userId)`。必须包含三个维度，结果稳定且非空。不要直接用冒号连接：`["a:b","c","d"]` 与 `["a","b:c","d"]` 容易碰撞。可用无歧义 JSON 序列化，再做稳定哈希。
+已实现 `sessionKey(channel, conversationId, userId)`，通过 `JSON.stringify([channel, conversationId, userId])` 编码三个维度。必须包含三个维度，结果稳定且非空。不要直接用冒号连接：`["a:b","c","d"]` 与 `["a","b:c","d"]` 容易碰撞。可用无歧义 JSON 序列化，再做稳定哈希。
 
 验收会并发发送同一事件两次，要求 Agent 只执行一次；同房间不同用户必须得到不同会话。去重和持久缓存由 Gateway 基础设施实现，不需要写在 L4。
 
@@ -160,21 +160,25 @@ npm run dev -- chat --plugin ./examples/plugins/word-count.ts
 
 ## 阶段 5：可审核自进化（L5）
 
-实现 `reflect(transcript): string | null`。成功的工具执行、最终 assistant 文本都存在时才生成候选；工具声明与结果 ID 必须完整配对。纯聊天、未结束调用、失败或非法 JSON 结果、孤立结果、缺失结果和错误 ID 均返回 null。可从 `L5/successful-procedure`、`L5/missing-tool-result` 等具名 case 逐项检查。
+learner 已实现 `async reflect(transcript, provider, options?): Promise<ReflectionResult>`。先检查完整轮次，再由模型判断是否有经验；失败后修复和无工具的用户纠正都可学习，闲聊或缺乏依据时返回 null。未结束调用、非法 JSON、孤立结果、缺失结果和错误 ID 会直接跳过。
 
-候选写适用场景、可复用步骤与验证方式，避免复制原始用户数据、工具参数或凭证。基础实现可只提取工具名称并生成保守流程，不需要额外模型调用。
+`ReflectionResult` 是新建正文、带目标和版本的 `SkillUpdate` 或 null。复盘工具只有 `skills_list`、`skill_view`、`skill_manage`；更新必须先在前一次请求读取完整 Skill。reference 仍是同步的成功工具模板，保留用于对照。
 
-验收检查 `pending → approved → 可发现 Skill`；未批准的内容不能进入索引，也不能改源码或覆盖已有技能。
+验收检查 `pending → approved → 可发现 Skill`；未批准的内容不能进入索引，也不能改源码；更新已有技能需批准且版本仍匹配。
 
 ```sh
-npm run dev -- chat --mode reference --message '/calc (2+3)*4' --auto-reflect --trace
+npm run dev -- chat --provider demo --mode learner --message '/calc (2+3)*4' --auto-reflect --trace
 npm run dev -- evolve list
 npm run dev -- evolve show PROPOSAL_ID
 npm run dev -- evolve approve PROPOSAL_ID --name verified-calculation --description '检查计算结果的流程'
 npm run dev -- skills read verified-calculation
 ```
 
-将 ID 替换为实际候选。补齐练习后改用 `--mode learner`；先阅读候选再批准，框架不会自动批准。断点放在 `reflect`、`EvolutionManager.propose` 与 `approve`。
+将 ID 替换为实际候选。先阅读候选再批准，框架不会自动批准。断点依次放在 `reflect`、`reviewableTurn`、`reflectionMessages`、`reviewTools`、`provider.complete`、`EvolutionManager.propose` 与 `approve`。
+
+Prompt 分为 system 规则和 user JSON 轨迹，并带上可选的上一轮用户/助手摘录。原始参数、成功结果正文、原始思考内容省略，失败消息做脱敏后保留。输入默认限制 12000 字符、候选 6000 字符；整个复盘最多 5 次请求，总超时 10 秒。
+
+Agent 先返回答复，再由后台队列复盘；新前台任务会取消正在进行的复盘。库调用可用 `waitForReflections()` 等待候选，关闭时调用 `close()`；CLI 正常退出前会等待后台结果。异常不撤销已保存答复，取消后的迟到结果不能落盘。完整调试顺序和更新示例见 [自进化闭环](04-memory-and-extensions.md#自进化闭环)。
 
 ## 调试与毕业验收
 

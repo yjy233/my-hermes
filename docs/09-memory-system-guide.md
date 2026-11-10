@@ -336,7 +336,7 @@ npm run dev -- chat --provider demo --mode reference --compression advanced --tr
 npm run dev -- chat --provider demo --mode reference --compression basic --trace
 ```
 
-完整 learner 聊天仍需实现 L4 路由；L3 已完成，L5 反思仍保留为练习。基础 `trimHistory` 是同步裁剪辅助策略，不能把它再称为当前异步 L2 的全部实现。
+完整 learner 聊天已可运行；L3 历史检索、L4 路由和 L5 模型反思均已实现。基础 `trimHistory` 是同步裁剪辅助策略，不能把它再称为当前异步 L2 的全部实现。
 
 建议按这个顺序设置断点：
 

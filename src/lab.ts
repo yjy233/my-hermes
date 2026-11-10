@@ -126,9 +126,10 @@ async function runScenario(stage: number, algorithms: Algorithms, emit: Emit,
         { role: 'tool', content: '{"ok":true,"result":4}', toolCallId: '1' },
         { role: 'assistant', content: '4' },
       ];
-      const body = algorithms.reflect(trace); assert.ok(body);
-      assert.equal(algorithms.reflect([{ role: 'assistant', content: 'chat only' }]), null);
-      assert.equal(algorithms.reflect([...trace.slice(0, 2), { role: 'tool', content: '{"ok":false}', toolCallId: '1' }, trace[3]]), null);
+      const provider = new DemoProvider();
+      const body = await algorithms.reflect(trace, provider, { signal }); assert.ok(body);
+      assert.equal(await algorithms.reflect([{ role: 'assistant', content: 'chat only' }], provider, { signal }), null);
+      assert.equal(await algorithms.reflect([...trace.slice(0, 2), { role: 'tool', content: '{"ok":false}', toolCallId: '1' }, trace[3]], provider, { signal }), null);
       const evolution = new EvolutionManager(join(root, 'proposals'), join(root, 'skills'));
       const id = evolution.propose('test-session', body);
       const catalog = new SkillCatalog([join(root, 'skills')]);

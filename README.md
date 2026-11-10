@@ -23,7 +23,7 @@ npm run kimi:test
 npm run kimi:chat
 ```
 
-测试要求只回复“Kimi 连接成功”，聊天脚本使用已经完成的 Kimi 主实现与参考 Core，不要求先补齐 L4/L5。模型、地址和超时配置在本地 `.hermes-lab/config.json`，示例见 [kimi.json](examples/config/kimi.json)；已有配置不被覆盖。CLI 自动读当前目录 `.env`，支持 --env-path，shell 环境优先。完整说明见 [Kimi 文档](docs/07-kimi-provider.md)。本次只完成离线协议验证，尚未使用你的密钥在线联调。
+测试要求只回复“Kimi 连接成功”，聊天脚本使用已经完成的 Kimi 主实现与参考 Core，也可在直接调用 CLI 时切换到 learner Core。模型、地址和超时配置在本地 `.hermes-lab/config.json`，示例见 [kimi.json](examples/config/kimi.json)；已有配置不被覆盖。CLI 自动读当前目录 `.env`，支持 --env-path，shell 环境优先。完整说明见 [Kimi 文档](docs/07-kimi-provider.md)。本次只完成离线协议验证，尚未使用你的密钥在线联调。
 
 ## 离线观察框架
 
@@ -47,7 +47,7 @@ npm run build
 - Core 的 `--mode reference/learner` 选择完整算法或 [exercises.ts](src/learning/exercises.ts) 中的 L1～L5。
 - Kimi 的 `--provider-mode learner/reference` 独立选择 [kimi.ts](src/core/providers/kimi.ts) 中已完成的主实现或对照版；主实现不会回退到参考版。
 
-基础设施、Kimi 连接、L1 runLoop、L2 compactHistory 和 L3 selectMemories 已实现，可阅读中文注释、调试并与参考版对照。L2 就是运行时默认启用的异步语义压缩主流程，L3 用于同用户跨会话的历史召回，`--mode` 决定实际调用哪份实现。**L4/L5 继续保留为练习**。每个阶段可以独立调试，不要求先完成整个 Agent。
+基础设施、Kimi 连接和 L1～L5 均已实现，可阅读中文注释、调试并与参考版对照。L2 就是运行时默认启用的异步语义压缩主流程，L3 用于同用户跨会话的历史召回，`--mode` 决定实际调用哪份实现。**L4 使用 JSON 编码会话键；L5 使用 Provider 异步生成待审核 Skill**。每个阶段可以独立调试，不要求先完成整个 Agent。
 
 | 阶段 | 学习内容 | 当前状态 / 学习任务 | 独立验收 |
 | --- | --- | --- | --- |
@@ -58,7 +58,7 @@ npm run build
 | 4 | Skills 与可信 Plugin | 添加自己的 Skill / Tool Plugin | `npm run dev -- check --stage 4 --mode learner` |
 | 5 | 自进化：成功轨迹到技能候选 | L5 `reflect` | `npm run dev -- check --stage 5 --mode learner` |
 
-`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。L1～L3 已完成，完整 learner 聊天仍需补齐 L4，反思使用 L5；下一步可实现阶段 3 的路由。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
+`demo --stage N` 运行同一离线场景。阶段检查的 --mode 选择当前学习实现：阶段 0 用本机 mock 验收 Kimi，不需要真实 key；阶段 1～5 检查对应算法与框架，阶段 4 只验证提供的扩展基线。自定义工具需要另写案例。learner 已可运行完整聊天；开启 `--auto-reflect` 后调用 L5。[学习路径](docs/03-learning-path.md) 列出断点与标准，[Kimi 专题](docs/07-kimi-provider.md) 说明模型协议。
 
 每阶段先看参考，再调试自己的代码；将阶段数字换成 0～5：
 
@@ -68,7 +68,7 @@ npm run dev -- check --stage 0 --mode learner --trace --debug
 npm run dev -- check --all --mode learner
 ```
 
-结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；L4/L5 未完成时状态为 `[passed, passed, passed, failed, passed, failed]`，不会回退到答案。阶段 0/1/2 是已完成主实现，阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
+结果 JSON 包含阶段与具名 case 的成功/失败，失败指出错误和相关练习；trace/debug 只向标准错误输出检查事件/错误栈，不写日常 profile。--all 报告全部六阶段，任一失败使退出码非零；当前 learner 六阶段都应通过；检查直接运行所选实现，不会回退到答案。阶段 4 是扩展基线。`npm test` 是基础设施与回归，learner 检查单独验证学生算法。
 
 调试 TypeScript：
 
@@ -117,14 +117,14 @@ npm run dev -- gateway --provider demo --mode reference --connector http --allow
 ## 自进化闭环
 
 ```bash
-npm run dev -- chat --provider demo --mode reference --message '/calc 6*7' --auto-reflect
+npm run dev -- chat --provider demo --mode learner --message '/calc 6*7' --auto-reflect
 npm run dev -- evolve list
 npm run dev -- evolve show PROPOSAL_ID
 npm run dev -- evolve approve PROPOSAL_ID --name checked-calculation --description '经人工核对的计算流程'
 npm run dev -- skills list
 ```
 
-将 `PROPOSAL_ID` 替换为实际 ID。成功工具轨迹可生成流程候选，批准后才进入 Skill 索引。模型没有批准工具；基线反思是供人工改进的草稿，不修改源码或模型权重。
+将 `PROPOSAL_ID` 替换为实际 ID。learner 会在后台复盘成功流程、失败后的修正和用户纠正，优先读取已有 Skill 并提出更新，再考虑新建。默认最多 5 次模型请求、总超时 10 秒；demo 使用确定性的离线响应，reference 保留规则模板作对照。候选批准后才生效；更新候选可直接用 `evolve approve ID`，文件版本已变化时会报告冲突。模型没有批准工具，不修改源码或模型权重。输入筛选、异常处理和 Hermes 差异见 [自进化闭环](docs/04-memory-and-extensions.md#自进化闭环)。
 
 ## 接入真实模型
 

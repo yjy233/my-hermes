@@ -136,7 +136,7 @@ npm run dev -- chat --provider demo --mode reference --compression basic --trace
 
 主配置采用上面的 `compression` 对象。此前本地版本的 `compressionEnabled`、`compressionThreshold`、`compressionSummaryChars`、`compressionTailMessages`、`compressionTimeoutMs` 等平铺字段仍可读取并映射到相应主配置；同一字段同时出现时，显式嵌套配置优先，命令行覆盖本次运行。`compressionTargetRatio` / `compressionToolChars` 保留给检查点库模式，不改变默认 L2 的 Hermes 风格分区策略。配置示例见 [context.json](../examples/config/context.json)。
 
-`compression.enabled: false` 或 `--compression basic` 时使用 `core/compression/trim.ts` 的 `trimHistory` 辅助策略。L2 本身是异步语义压缩，learner 与 reference 都已有独立主流程，L3 的 FTS 候选、词项/live/同源 BM25 排序和原文窗口读取也已实现；L4/L5 继续保留为练习。`check --stage 2 --mode learner` 可独立运行 26 项压缩、记忆整理和历史检索验收，不要求先完成路由与反思。
+`compression.enabled: false` 或 `--compression basic` 时使用 `core/compression/trim.ts` 的 `trimHistory` 辅助策略。L2 本身是异步语义压缩，learner 与 reference 都已有独立主流程，L3 的 FTS 候选、词项/live/同源 BM25 排序和原文窗口读取也已实现；L4 会话键和 L5 模型反思也已实现。`check --stage 2 --mode learner` 可独立运行 26 项压缩、记忆整理和历史检索验收，不要求先完成路由与反思。
 
 ```sh
 node --import tsx --test tests/compression.test.ts tests/compression-http.test.ts
