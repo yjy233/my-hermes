@@ -157,7 +157,7 @@ npm run dev -- evolve approve UPDATE_ID
 
 本机 Hermes 的 `agent/background_review.py` 和 `agent/turn_finalizer.py` 同样支持任务后的后台复盘、用户纠正、失败修复经验、优先更新已有技能和更新前读取。本项目独立实现这些机制，没有引用上游代码。
 
-Hermes 还支持主任务主动调用 `skill_manage`、更广的技能目录和支持文件操作、可配置写入审核，以及 curator 定期整理。本项目目前仅在复盘中开放精简的技能工具，始终先生成待审候选，没有实现自动批准、curator 或跨重启后台任务恢复。Skill 是可审核的程序性知识，不修改模型权重或项目源码，也不代表已经通过效果评测。
+L5 仍然先生成待审候选。下面的 Curator 是独立的整库维护链路：包含统计、自动状态转换、完整技能包操作、模型整理、可选审批、备份和审计撤销。两者可以共同使用同一个技能库，但触发条件和写入策略不同。Skill 是程序性知识，不修改模型权重或项目源码，也不代表已经通过效果评测。
 
 ## 调试建议
 
@@ -170,3 +170,183 @@ Hermes 还支持主任务主动调用 `skill_manage`、更广的技能目录和�
 运行 `npm test` 验证持久化、隔离、路径边界、扩展注册和审核；`npm run dev -- check --stage 4` / `--stage 5 --mode learner` 可单独检查扩展与自进化闭环。`tests/learner-reflection.test.ts` 覆盖输入预算与异常边界；`tests/evolution-review.test.ts` 覆盖后台优先级、纠正学习、读取后更新和过期版本冲突；CLI 与集成测试验证新建、更新和批准后的新会话。
 
 构建时还会将示例插件编译到 `dist/examples/plugins/word-count.js`，可直接供编译后的 CLI 加载。使用已安装 npm 包时，选择这个 JavaScript 入口；Node 不会对 `node_modules` 内的 TypeScript 文件执行内置类型擦除。仓库开发流程仍使用 `examples/plugins/word-count.ts`。
+
+## Curator：整库维护
+
+对照版本是本机 `/Users/bill/code/hermes-agent` 的提交 `29a61cb7ab509cda0c376bf3860edb87210b0755`。实现与 prompt 用 TypeScript 独立编写；对应上游 `agent/curator.py`、`agent/curator_backup.py`、`tools/skill_usage.py`、`tools/skill_ledger.py`、`tools/skill_manager_tool.py`、`tools/skill_manager_batch.py` 和 `tools/skill_manager_guards.py`。
+
+L5 研究“这一轮任务有什么经验值得留下”；Curator 研究“整个技能库有没有长期闲置的技能，许多零碎技能能不能整理成更容易找到的领域指南”。它没有调用 L5 的 `reflect()`，也不会在自己执行结束后递归触发复盘。
+
+```mermaid
+flowchart TD
+    A[CLI /curator 或独立 curator 命令] --> D[获取唯一运行锁]
+    B[CLI / Gateway 定时检查] --> C{启用且未暂停\n间隔已到且前台空闲}
+    C -->|是| D
+    D --> E{dry-run?}
+    E -->|否| F[整理开启则整库备份\n执行确定性状态转换\n保存运行时钟]
+    E -->|是| G[只读预览]
+    F --> H{consolidate 开启\n且存在合格候选?}
+    G --> H
+    H -->|是| I[独立模型上下文\nskills_list / skill_view / skill_manage]
+    I --> J[读版本检查 / 来源与 pin lock 检查\n可选审批 / 原子批处理 / 审计]
+    J --> I
+    I --> K[实际目录差异与成功工具结果\n生成 REPORT.md 和 run.json]
+    H -->|否| K
+```
+
+### 先从这几个入口读
+
+1. [`curator.ts`](../src/curator/curator.ts)：`due()` → `run()` → `transitions()` → `modelReview()`，看“什么时候维护”和“两阶段执行”。
+2. [`prompt.ts`](../src/curator/prompt.ts)：模型整理指令及 dry-run 附加约束。不是只让模型判断相似度，而是要求建立领域级 umbrella、提炼规则、保留有价值的细节、检查整个技能包并重写相对引用。
+3. [`tools.ts`](../src/curator/tools.ts)：读取记录、先读后写、审批和批量工具。读结果必须在更早的模型步骤中得到；同一条模型回复里先 read 再 patch 不算已经观察到结果。
+4. [`repository.ts`](../src/curator/repository.ts)：技能来源、usage、pin/lock、完整包读写、归档恢复和批处理事务。
+5. [`backup.ts`](../src/curator/backup.ts)、[`ledger.ts`](../src/curator/ledger.ts)：整库回滚与单次操作撤销分别解决什么问题。
+6. [`tests/curator.test.ts`](../tests/curator.test.ts)：先看模型真正合并两个技能的测试，再看失败和恢复测试。所有测试都用临时 profile 和离线 provider。
+
+### 调度与状态转换
+
+默认配置和本机 Hermes 对齐：
+
+```json
+{
+  "curator": {
+    "enabled": true,
+    "interval_hours": 168,
+    "min_idle_hours": 2,
+    "stale_after_days": 14,
+    "archive_after_days": 30,
+    "consolidate": false,
+    "prune_builtins": false,
+    "archive_ttl_days": 0,
+    "backup": { "enabled": true, "keep": 2 }
+  },
+  "skills": {
+    "ledger": true,
+    "ledger_max_bytes": 5242880,
+    "write_approval": false,
+    "disabled": [],
+    "external_dirs": []
+  },
+  "auxiliary": {
+    "curator": { "provider": "kimi", "model": "your-curator-model", "baseUrl": "https://api.moonshot.cn/v1" }
+  }
+}
+```
+
+`auxiliary.curator` 是可选的；省略时沿用主 provider。这里只展示路由形状，模型名称与地址应填自己的实际配置。Curator 默认启用的是确定性维护，`consolidate` 默认关闭，所以不会仅因启用 Curator 就自动付费调用模型。
+
+交互式 CLI 启动时像 Hermes 一样额外做一次后台检查，并把启动阶段视作空闲；Gateway 的首次定时检查在 90 秒后，之后每小时检查一次。自动维护用独立工作进程执行，整库扫描和备份不会占住聊天进程的事件循环。前台正在处理请求时不启动；最后一个请求结束后重新计算空闲时间。首次没有 `last_run_at` 时只记录当前时间，等待完整的 168 小时间隔。程序退出后计时器停止；状态留在磁盘，下次启动继续判断。`curator run` 是手动立即执行，绕过自动间隔和暂停门槛。
+
+生命周期按最近的 `last_used_at`、`last_viewed_at`、`last_patched_at` 三者最大值计算；没有活动则看 `created_at`。超过 14 天标记 stale，超过 30 天将整个目录移动到 `.archive`；恢复活动的 stale 技能重新变 active。最近创建、从未使用的技能不会被当成过期。首次看到内置技能时先锚定时间，不能把缺少统计当作“从 epoch 起就没用”。
+
+### 管理资格和保护
+
+| 条件 | 自动状态转换 | 模型合并/改写 |
+| --- | --- | --- |
+| 本地 `created_by: agent` | 允许 | 允许 |
+| 本地 `learn` 或无管理标记 | 不处理；可 `adopt` | 不处理 |
+| bundled 内置 | 仅 `prune_builtins: true` 可归档 | 不改写 |
+| hub installed / external_dirs | 不处理 | 不改写 |
+| pinned | 跳过 | 跳过；普通前台修改仍可进行 |
+| locked | 跳过 | 拒绝所有 agent 修改；L5 批准也检查 |
+| cron 引用，包括暂停任务 | 不按闲置归档 | 只能吸收到仍存在的目标，并迁移引用 |
+| disabled | 仍按维护资格判断确定性生命周期 | 不作为整理候选，不允许读取或改写 |
+
+`created_by: agent` 表示用户同意交给 Curator 管理，不是可靠的作者身份证明；`adopt` 会写这个标记。已有旧技能不会凭空获得管理资格。L5 新批准的自动经验技能会记录管理标记；旧技能可先列出来再采用 `adopt`。
+
+内置技能首次使用时镜像到 profile，归档只作用于镜像。`.curator_suppressed.json` 防止已经归档的内置技能在下次启动时重新出现。不会移动源码里的 `src/data/skills`。支持嵌套分类目录；归档和恢复以 frontmatter 中的技能名识别，恢复到平铺目录。
+
+### 模型循环和异常
+
+模型只拿到三个技能工具，使用独立消息数组；没有 terminal、memory 工具，也不注入主会话历史。最大迭代 9999 次，支持上下文压缩，保留 provider 要求的 `reasoningContent`。每次模型请求单独有超时，可以由进程关闭信号终止。
+
+`skill_manage` 接受 `operations` 数组，兼容单操作的 `action/name` 写法。最多 20 项；创建、patch、写支持文件、删支持文件可以跨多个技能原子执行。一项失败，涉及的技能文件和 usage 恢复；不留下声称成功的批次审计。同一文件不允许前面改了后面又全量覆盖；连续的局部 patch 可以组合。`delete` 必须独占一批，并提供已存在且已读取的 `absorbed_into`；此处实际执行归档，彻底删除只在显式 `purge` 中发生。
+
+既有文件必须先完整读取，且写入时哈希仍一致。支持 `references/`、`templates/`、`scripts/`、`assets/` 等包内文件，保留二进制和执行权限。`write_file` 的正文键为 `file_content`，`patch` 使用 `old_string/new_string` 或完整 `content`。每种操作的失败都作为工具错误返给模型，让模型修正。相同参数失败 2 次警告、5 次后拒绝重放；同一工具连续失败累计 8 次终止；重复只读结果也检测无进展，避免烧完迭代预算。
+
+运行时钟在模型阶段之前落盘。模型超时、网络失败、循环保护触发或取消时，已完成的变更保留并记录到报告，报告带 `error`，CLI 返回失败；不会声称整轮成功，也不会立刻因未记录运行时间而重跑。报告的合并关系来自实际归档结果和 `absorbed_into`，不凭模型最后一段文字认定成功。
+
+`skills.write_approval: true` 会把完整操作和读版本写进 `.pending`。批准时重新检查 pin/lock、来源和文件版本，过期审批不能覆盖新内容。待审操作未修改线上技能，模型也被明确告知不能假设它已经生效。L5 自己的 proposal 审核流程保持独立。
+
+### 数据落在哪里
+
+```text
+<home>/
+  skills/
+    <skill>/SKILL.md + references/ + scripts/ + templates/ + assets/
+    .usage.json                    # 每个技能的活动统计、管理标记、pin、lock、状态
+    .curator_state                 # 调度时钟、暂停、运行次数、最后摘要与报告路径
+    .bundled_manifest              # 本项目的内置镜像清单
+    .curator_suppressed.json       # 被归档内置技能的抑制清单
+    .archive/<skill-or-version>/   # 整包归档
+    .curator_backups/<id>/
+      skills.tar.gz + manifest.json
+    .curator_ledger.jsonl          # 每次实际修改的 actor、前后文件哈希、关联关系
+    .pending/<id>.json            # 可选写入审批
+    .locks/                       # 所有权 token / PID 的进程间操作锁
+  .curator_backups/blobs/<sha256>  # 审计引用的原始字节
+  logs/curator/<id>/run.json + REPORT.md
+  cron/jobs.json                  # 若存在，读取和迁移任务的 skill/skills 引用
+```
+
+这里没有新增 SQLite 表；Curator 管理的是技能文件资产。对话历史仍在 `sessions.db`，长期事实仍在 memory 文件中。
+
+整库备份默认保留 2 份。只有启用模型整理的正式运行才做前置整库备份；单纯归档本身已经可恢复。备份失败与上游一样会记警告，不能悄悄禁用整个 Curator。归档、hub、审计、锁、缓存及 Git 数据不进入整库快照；回滚也保留这些被排除的数据。整库回滚先验证压缩包与路径，再创建安全快照，失败会恢复回滚前内容。cron 只恢复仍存在任务的技能引用，不复活已删除的任务，不覆盖 prompt、调度等其他字段。
+
+审计记录使用 SHA-256 blob 保存前后文件字节；一般审计写入失败只记录警告，正常修改继续。单条撤销要求安全记录成功，缺失 blob 或关闭 ledger 时拒绝执行。大小默认 5 MiB；压缩相同文件条目、裁去最老记录，保留最新记录，并清理超过一小时且无人引用的 blob。`ledger_max_bytes: 0` 表示不限大小。配套文件已经迁走时，归档/清除审计会从最近整库备份补齐缺项，避免单条撤销恢复出不完整的包。
+
+### 可以直接运行的命令
+
+```bash
+# 查看状态、所有来源的统计、尚未交给 Curator 的旧技能
+npm run dev -- curator status
+npm run dev -- curator usage --sort recent
+npm run dev -- curator list-unmanaged
+npm run dev -- curator adopt my-skill
+
+# 确定性维护、模型预览、正式模型整理、独立后台进程
+npm run dev -- curator run
+npm run dev -- curator run --dry-run --consolidate
+npm run dev -- curator run --consolidate
+npm run dev -- curator run --consolidate --background
+
+# 保护、暂停与恢复
+npm run dev -- curator pin my-skill
+npm run dev -- curator lock my-skill
+npm run dev -- curator unlock my-skill
+npm run dev -- curator pause
+npm run dev -- curator resume
+
+# 归档与显式清除（默认 TTL=0，永不自动删除）
+npm run dev -- curator prune --days 30 --dry-run
+npm run dev -- curator prune --days 30 --yes
+npm run dev -- curator list-archived
+npm run dev -- curator restore my-skill
+npm run dev -- curator purge --days 90 --dry-run
+
+# 两种恢复：整库快照 / 单条变更
+npm run dev -- curator backup
+npm run dev -- curator backups
+npm run dev -- curator rollback SNAPSHOT_ID
+npm run dev -- curator ledger --limit 20
+npm run dev -- curator undo LEDGER_ID
+
+# 可选审批
+npm run dev -- curator pending
+npm run dev -- curator approve PENDING_ID
+npm run dev -- curator reject PENDING_ID
+```
+
+所有命令可加 `--home PATH`。聊天 CLI 支持 `/curator status`、`/curator run --dry-run --consolidate` 等相同命令；`--background` 使用独立 CLI。demo provider 会验证链路并说明未做语义合并，真实语义整理需要配置 Kimi 或 compatible provider。离线测试使用脚本化 provider 验证实际合并和失败恢复，没有调用付费接口。
+
+### 明确的适配边界
+
+这版保留上述核心维护机制，但不是 Python Hermes 的二进制或平台兼容移植：
+
+- 原项目目前只有 CLI、JSONL 和 HTTP 入口；空闲维护接入它们的运行进程。没有移植 Telegram/Discord/Web UI 或 Hermes 的完整 cron 执行器。`cron/jobs.json` 引用保护和迁移是真实文件操作，可独立验证，不会伪造定时任务已经在执行。
+- JSON 配置、内置 manifest、报告和锁格式属于本项目，不能把两套 profile 直接互换。模型路由覆盖现有 demo/Kimi/compatible 能力；没有移植 Hermes 的 credential pool、ACP 或专用 provider 家族。
+- dry-run 在工具层禁止写入，也禁止读取产生 usage 计数，保证预览不改变维护时钟；本机上游的通用 `skill_view` wrapper 会更新 view/use，这里把预览隔离做得更严格。
+- PID 锁只回收确认死亡的进程，避免上游按一小时陈旧时间抢占仍在执行的长整理。后台 CLI 用独立进程，退出原终端命令后仍可完成；运行中断后保存的状态和审计可查看，但不会从半轮模型上下文继续执行。
+- 工具沿用项目的有界消息协议、技能 frontmatter 格式和文件预算。备份总大小上限 256 MiB；超限会明确报错，不截断文件。本次没有迁移上游完整 YAML frontmatter、市场安装系统和任意 shell 执行。
+
+这些边界不影响学习 Curator 的核心链路。下一块 Persistent Goals 是“跨多个主任务回合推进目标”的外层控制器，不属于 Curator，也还没有实现。

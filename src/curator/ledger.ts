@@ -1,5 +1,5 @@
 /** 每次变更保存内容寻址的二进制快照；正常记录尽力而为，撤销前的安全记录必须成功。 */
-import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, chmodSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, chmodSync, rmdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { atomicWrite, readBoundedFile } from '../memory/files.js';
 import { collectFiles, digest, identifier, locked, readJson, safePath, writeBytes, type PackageFile } from './files.js';
@@ -29,7 +29,8 @@ export class SkillLedger {
   materialize(refs: FileRef[]): PackageFile[] {
     return refs.map(ref => {
       if (!/^[a-f0-9]{64}$/.test(ref.sha256)) throw new Error('Invalid ledger blob hash');
-      const bytes = collectFiles(this.blobs, new Set()).find(file => file.path === ref.sha256)?.data;
+      const blob = safePath(this.blobs, ref.sha256);
+      const bytes = existsSync(blob) ? readFileSync(blob) : undefined;
       if (!bytes || digest(bytes) !== ref.sha256) throw new Error(`Missing or corrupt ledger blob: ${ref.sha256}`);
       safePath(this.root, ref.path);
       return { path: ref.path, data: bytes, mode: ref.mode };
@@ -47,10 +48,18 @@ export class SkillLedger {
     try {
       return locked(this.root, 'ledger', () => {
         mkdirSync(this.root, { recursive: true });
-        const entry: LedgerEntry = { ...meta, id: identifier(), at: new Date().toISOString(), before: this.capture(before), after: this.capture(after) };
+        const unchanged = new Set(before.filter(a => after.some(b => b.path === a.path && b.mode === a.mode && digest(b.data) === digest(a.data))).map(f => f.path));
+        const entry: LedgerEntry = { ...meta, id: identifier(), at: new Date().toISOString(),
+          before: this.capture(before.filter(f => !unchanged.has(f.path))), after: this.capture(after.filter(f => !unchanged.has(f.path))) };
         // 写入前先验明 ledger 路径不是符号链接。
         safePath(this.root, '.curator_ledger.jsonl');
-        appendFileSync(this.path, JSON.stringify(entry) + '\n', { mode: 0o600 });
+        let prefix = '';
+        if (existsSync(this.path) && statSync(this.path).size) {
+          const descriptor = openSync(this.path, 'r'), last = Buffer.alloc(1);
+          try { readSync(descriptor, last, 0, 1, statSync(this.path).size - 1); } finally { closeSync(descriptor); }
+          if (last[0] !== 10) prefix = '\n';
+        }
+        appendFileSync(this.path, prefix + JSON.stringify(entry) + '\n', { mode: 0o600, flush: true });
         this.compactUnlocked(); return entry.id;
       });
     } catch (error) {
@@ -73,7 +82,7 @@ export class SkillLedger {
         } catch { return line; }
       });
       // 最新一条及损坏的尾行保留；不在这里悄悄修复坏记录。
-      while (lines.length > 1 && Buffer.byteLength(lines.join('\n')) > limit) {
+      while (lines.length > 1 && Buffer.byteLength(lines.join('\n')) > Math.floor(limit * 0.8)) {
         let lastValid = -1;
         for (let i = 0; i < lines.length; i++) { try { if (JSON.parse(lines[i]).id) lastValid = i; } catch { /* preserve */ } }
         if (lastValid <= 0) break;
@@ -87,6 +96,7 @@ export class SkillLedger {
     }
   }
   undo(id: string): string {
+    if (!this.settings.ledger) throw new Error('Enable skills.ledger before undo; a safety record is required');
     return locked(this.root, 'mutation', () => {
       const entry = this.entries().find(item => item.id === id);
       if (!entry) throw new Error('Unknown ledger entry');
@@ -101,6 +111,13 @@ export class SkillLedger {
         for (const path of paths) rmSync(safePath(this.root, path), { force: true });
         for (const file of before) { const path = safePath(this.root, file.path); writeBytes(path, file.data); chmodSync(path, file.mode); }
         throw error;
+      }
+      for (const path of paths) {
+        let parent = dirname(safePath(this.root, path));
+        while (parent !== this.root) {
+          try { rmdirSync(parent); } catch { break; }
+          parent = dirname(parent);
+        }
       }
       return safety;
     });

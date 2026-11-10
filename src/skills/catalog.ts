@@ -27,18 +27,20 @@ export class SkillCatalog {
   readonly roots: string[];
   skills = new Map<string, Skill>();
 
-  constructor(roots: string[]) { this.roots = roots.map(root => resolve(root)); }
+  constructor(roots: string[], readonly options: { disabled?: string[]; onRead?: (name: string) => void } = {}) { this.roots = roots.map(root => resolve(root)); }
 
   discover(): Skill[] {
     const found = new Map<string, Skill>();
     for (const configuredRoot of this.roots) {
       if (!existsSync(configuredRoot)) continue;
       const root = realpathSync(configuredRoot);
-      for (const directory of readdirSync(root).sort()) {
-        const directoryPath = join(root, directory);
+      const visit = (parent: string): void => { for (const directory of readdirSync(parent).sort()) {
+        if (directory.startsWith('.') || ['node_modules', '__pycache__', 'venv'].includes(directory)) continue;
+        const directoryPath = join(parent, directory);
         if (lstatSync(directoryPath).isSymbolicLink()) throw new Error('Skill directories cannot be symlinks');
         const path = join(directoryPath, 'SKILL.md');
-        if (!lstatSync(directoryPath).isDirectory() || !existsSync(path)) continue;
+        if (!lstatSync(directoryPath).isDirectory()) continue;
+        if (!existsSync(path)) { visit(directoryPath); continue; }
         assertSafeFile(root, path);
         const text = readBoundedFile(path, MAX_SKILL_BYTES);
         const lines = text.split(/\r?\n/);
@@ -55,12 +57,13 @@ export class SkillCatalog {
         const name = metadata.get('name') ?? '';
         const description = metadata.get('description') ?? '';
         validateSkillName(name);
+        if (this.options.disabled?.includes(name)) continue;
         if (!description || description.length > 500 || /[\r\n]/.test(description)) {
           throw new Error('Skill description must be one line of 1-500 characters');
         }
         if (found.has(name)) throw new Error(`Duplicate skill: ${name}`);
         found.set(name, { name, description, path, root });
-      }
+      } }; visit(root);
     }
     this.skills = found;
     return [...found.values()];
@@ -75,6 +78,8 @@ export class SkillCatalog {
     const skill = this.skills.get(name);
     if (!skill) throw new Error(`Unknown skill: ${name}`);
     assertSafeFile(skill.root, skill.path);
-    return readBoundedFile(skill.path, MAX_SKILL_BYTES);
+    const text = readBoundedFile(skill.path, MAX_SKILL_BYTES);
+    this.options.onRead?.(name);
+    return text;
   }
 }

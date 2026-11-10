@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { assertContained, atomicWrite, pathExists, readBoundedFile } from '../memory/files.js';
 
@@ -32,7 +32,11 @@ export function writeJson(path: string, value: unknown): void {
 export function writeBytes(path: string, data: Buffer): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = join(dirname(path), `.write-${randomUUID()}`);
-  try { writeFileSync(temporary, data, { flag: 'wx', mode: 0o600 }); renameSync(temporary, path); }
+  try {
+    const descriptor = openSync(temporary, 'wx', 0o600);
+    try { writeFileSync(descriptor, data); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+    renameSync(temporary, path);
+  }
   finally { rmSync(temporary, { force: true }); }
 }
 
@@ -40,6 +44,7 @@ export interface PackageFile { path: string; data: Buffer; mode: number }
 export function collectFiles(root: string, exclude = EXCLUDED): PackageFile[] {
   if (!existsSync(root)) return [];
   const result: PackageFile[] = [];
+  let totalBytes = 0;
   const walk = (directory: string) => {
     for (const name of readdirSync(directory).sort()) {
       if (exclude.has(name) || name.startsWith('.write-') || name.startsWith('.rollback-')) continue;
@@ -48,12 +53,24 @@ export function collectFiles(root: string, exclude = EXCLUDED): PackageFile[] {
       if (stat.isDirectory()) walk(path);
       else if (stat.isFile()) {
         if (stat.size > 64 * 1024 * 1024) throw new Error('Skill file exceeds backup budget');
+        totalBytes += stat.size;
+        if (totalBytes > 256 * 1024 * 1024) throw new Error('Skill tree exceeds 256 MiB backup budget');
         result.push({ path: relative(root, path).split('\\').join('/'), data: readFileSync(path), mode: stat.mode & 0o777 });
       } else throw new Error('Unsupported entry in skill tree');
     }
   };
   walk(root);
   return result;
+}
+
+export function pruneEmptyDirectories(root: string): void {
+  for (const name of readdirSync(root)) {
+    if (EXCLUDED.has(name) || name.startsWith('.rollback-')) continue;
+    const path = safePath(root, name);
+    if (!lstatSync(path).isDirectory()) continue;
+    pruneEmptyDirectories(path);
+    if (!readdirSync(path).length) rmSync(path, { recursive: true });
+  }
 }
 
 /** 原子 mkdir 锁带所有权 token；只回收已确认死亡进程留下的锁。 */

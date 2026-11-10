@@ -18,6 +18,8 @@ import { LongTermMemory, SessionStore } from './memory/index.js';
 import { ProfileLock } from './profile-lock.js';
 import { SkillCatalog } from './skills/index.js';
 import { loadEnvironmentFile } from './environment.js';
+import { createCurator, curatorCommand, runCuratorWorker, startBackground } from './curator/cli.js';
+import { Curator, CuratorScheduler } from './curator/curator.js';
 
 function parse(argv: string[]) {
   return parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
@@ -33,6 +35,10 @@ function parse(argv: string[]) {
     host: { type: 'string' }, port: { type: 'string' }, stage: { type: 'string' }, all: { type: 'boolean' },
     name: { type: 'string' }, description: { type: 'string' }, help: { type: 'boolean', short: 'h' },
     version: { type: 'boolean' },
+    'dry-run': { type: 'boolean' }, consolidate: { type: 'boolean' }, background: { type: 'boolean' },
+    yes: { type: 'boolean' }, days: { type: 'string' }, compact: { type: 'boolean' },
+    sort: { type: 'string' }, provenance: { type: 'string' }, 'all-unmanaged': { type: 'boolean' },
+    rollback: { type: 'string' }, limit: { type: 'string' }, sync: { type: 'boolean' }, synchronous: { type: 'boolean' }, json: { type: 'boolean' },
   } });
 }
 type Parsed = ReturnType<typeof parse>;
@@ -44,6 +50,10 @@ Commands:
   gateway --connector jsonl|http [--allow-user ID] [--host 127.0.0.1] [--port 8765]
   skills list | skills read NAME
   evolve list | evolve show ID | evolve approve ID --name NAME --description TEXT
+  curator status | run [--dry-run] [--consolidate] [--background] | pause | resume
+  curator pin|unpin|lock|unlock|adopt|archive|restore NAME | unmanaged | archived
+  curator prune|purge [--days N] [--dry-run|--yes] | backup | backups | rollback [ID]
+  curator ledger [--compact] | undo ID | pending | approve|reject ID
 Common: --home PATH --mode MODE --provider demo|compatible|kimi --provider-mode learner|reference
         --model NAME --base-url URL --env-path PATH --compression basic|advanced
         --plugin PATH (repeatable) --auto-reflect --no-auto-reflect --trace --debug
@@ -67,8 +77,11 @@ function settingsFor(values: Parsed['values']): Settings {
   return settings;
 }
 function catalogFor(settings: Settings): SkillCatalog {
-  const catalog = new SkillCatalog([builtinSkills(), resolve(settings.home, 'skills')]);
-  catalog.discover(); return catalog;
+  const repo = createCurator(settings).repo;
+  return repo.catalog(name => {
+    try { repo.activity(name, 'view'); repo.activity(name, 'use'); }
+    catch (error) { console.error(`Skill usage telemetry: ${String(error)}`); }
+  });
 }
 function traceWriter(home: string): Emit {
   return (event, payload) => {
@@ -82,9 +95,13 @@ function requirePosition(value: string | undefined, label: string): string {
   if (!value) throw new Error(`${label} is required`); return value;
 }
 
-async function chat(gateway: Gateway, values: Parsed['values'], signal: AbortSignal): Promise<void> {
+async function chat(gateway: Gateway, values: Parsed['values'], signal: AbortSignal, curator: Curator): Promise<void> {
   let conversation = values.session ?? 'default';
   const send = async (text: string) => {
+    if (text === '/curator' || text.startsWith('/curator ')) {
+      const parsed = parse(['curator', ...text.slice('/curator'.length).trim().split(/\s+/u).filter(Boolean)]);
+      print(await curatorCommand(curator, parsed.positionals[1], parsed.positionals[2], parsed.values, signal)); return;
+    }
     const reply = await gateway.handle({ eventId: randomUUID(), channel: 'cli', conversationId: conversation,
       userId: values.user ?? 'local', text }, signal);
     console.log(reply.text);
@@ -117,7 +134,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
   if (values.version) { console.log('0.2.0'); return; }
   if (values.help || !positionals.length) { console.log(HELP); return; }
   const [command, action, id] = positionals;
-  if (!['init', 'doctor', 'chat', 'gateway', 'check', 'demo', 'sessions', 'history', 'skills', 'evolve'].includes(command)) {
+  if (!['init', 'doctor', 'chat', 'gateway', 'check', 'demo', 'sessions', 'history', 'skills', 'evolve', 'curator'].includes(command)) {
     throw new Error(`Unknown command: ${command}`);
   }
   const settings = settingsFor(values);
@@ -151,6 +168,15 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     if (failedStages) throw new Error(`Acceptance failed: ${failedStages}/${targets.length} stages, ${failedCases} cases`);
     return;
   }
+  if (command === 'curator') {
+    initializeProfile(settings);
+    if (values.background) {
+      if (action !== 'run') throw new Error('--background is only available for curator run');
+      print(await startBackground(settings, ['curator', ...positionals.slice(1), ...Object.entries(values).flatMap(([key, value]) =>
+        value === true ? [`--${key}`] : typeof value === 'string' ? [`--${key}`, value] : [])]));
+    } else print(await curatorCommand(createCurator(settings), action, id, values, signal));
+    return;
+  }
   if (command === 'skills' || command === 'evolve') {
     initializeProfile(settings);
     if (command === 'skills') {
@@ -159,7 +185,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       else if (action === 'read') console.log(catalog.read(requirePosition(id, 'Skill name')));
       else throw new Error('Use skills list or skills read NAME');
     } else {
-      const evolution = new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills'));
+      const evolution = new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills'), createCurator(settings).repo);
       if (action === 'approve') {
         const proposalId = requirePosition(id, 'Proposal ID'), proposal = evolution.get(proposalId);
         const name = proposal.action === 'update' ? values.name : requirePosition(values.name, '--name');
@@ -175,7 +201,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     return;
   }
   const lock = command === 'chat' || command === 'gateway' ? new ProfileLock(settings.home).acquire() : undefined;
-  let store: SessionStore | undefined, gateway: Gateway | undefined, agent: Agent | undefined;
+  let store: SessionStore | undefined, gateway: Gateway | undefined, agent: Agent | undefined, maintenance: CuratorScheduler | undefined;
   try {
     initializeProfile(settings);
     store = new SessionStore(resolve(settings.home, 'sessions.db'));
@@ -196,17 +222,23 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       print(store.loadMessages(sessionId)); return;
     }
     const provider = createProvider(settings);
+    const curator = createCurator(settings);
+    try { const notification = curator.takeNotification(); if (notification) console.error(`Curator: ${notification}`); }
+    catch (error) { console.error(`Curator state: ${String(error)}`); }
+    maintenance = new CuratorScheduler(curator, message => console.error(message), signal => runCuratorWorker(settings, curator, signal));
+    maintenance.start(command === 'chat' && values.message === undefined);
     agent = new Agent({ provider, store, memory: new LongTermMemory(resolve(settings.home, 'memory')),
+      activity: maintenance,
       skills: catalogFor(settings), mode: settings.mode, maxSteps: settings.maxSteps, contextChars: settings.contextChars,
       compression: { ...settings.compression, memoryFlush: settings.compressionMemoryFlush },
       summaryProvider: settings.compression.summaryModel ? createProvider({ ...settings, model: settings.compression.summaryModel }) : undefined,
       turnTimeoutMs: settings.turnTimeoutMs, plugins: settings.plugins, autoReflect: settings.autoReflect,
-      evolution: new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills')),
+      evolution: new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills'), curator.repo),
       emit: values.trace ? traceWriter(settings.home) : undefined });
     gateway = new Gateway(agent, store, loadAlgorithms(settings.mode).sessionKey,
       values['allow-user'] ? new Set(values['allow-user']) : undefined);
     if (command === 'chat') {
-      await chat(gateway, values, signal); // 答复先打印；正常退出前等待最后一次复盘落盘。
+      await chat(gateway, values, signal, curator); // 答复先打印；正常退出前等待最后一次复盘落盘。
       await agent.waitForReflections(signal);
       return;
     }
@@ -235,7 +267,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
         if (signal.aborted) stop();
       });
     } else throw new Error('connector must be jsonl or http');
-  } finally { agent?.close(); gateway?.close(); store?.close(); lock?.release(); }
+  } finally { agent?.close(); await maintenance?.close(); gateway?.close(); store?.close(); lock?.release(); }
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {

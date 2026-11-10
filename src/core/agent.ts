@@ -23,6 +23,7 @@ export interface AgentOptions {
   compression?: Partial<CompressionSettings> & CompressionOptions;
   summaryProvider?: Provider;
   reflection?: Pick<ReflectionOptions, 'timeoutMs' | 'maxInputChars' | 'maxSteps'>;
+  activity?: { beginTurn(): void; endTurn(): void };
   /** 默认采用异步 L2；checkpoint 保留合并前的摘要引擎 API，不能叠加两套压缩。 */
   contextEngine?: 'hermes' | 'checkpoint';
 }
@@ -56,8 +57,9 @@ export class Agent {
     if (typeof text !== 'string' || !text.trim() || text.length > 16_000) throw new Error('Message must contain 1..16000 characters');
     return this.mutex.run(key, async () => {
       this.reviews.beginTurn(key);
+      this.options.activity?.beginTurn();
       try { return await withTimeout(turnSignal => this.runTurn(key, scope, text, turnSignal), this.turnTimeoutMs, signal); }
-      finally { this.reviews.endTurn(); }
+      finally { this.reviews.endTurn(); this.options.activity?.endTurn(); }
     }, signal);
   }
 

@@ -4,6 +4,7 @@ import { isRecord } from './core/models.js';
 import type { Mode } from './learning/types.js';
 import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL } from './core/providers/kimi-shared.js';
 import { compressionSettings, DEFAULT_COMPRESSION, type CompressionSettings } from './core/compression/settings.js';
+import { curatorSettings, skillSettings, DEFAULT_CURATOR, DEFAULT_SKILLS, type CuratorSettings, type SkillSettings } from './curator/settings.js';
 
 export interface Settings {
   home: string; mode: Mode; providerMode: Mode; provider: 'demo' | 'compatible' | 'kimi'; model: string; baseUrl: string;
@@ -13,8 +14,14 @@ export interface Settings {
   compressionEnabled: boolean; compressionThreshold: number; compressionTargetRatio: number;
   compressionSummaryChars: number; compressionTailMessages: number; compressionToolChars: number;
   compressionTimeoutMs: number; compressionMemoryFlush: boolean;
+  curator: CuratorSettings; skills: SkillSettings;
+  auxiliary: { curator?: { provider?: 'demo' | 'compatible' | 'kimi'; model?: string; baseUrl?: string } };
 }
-export type SettingsOverrides = Partial<Omit<Settings, 'home' | 'compression'>> & { compression?: Partial<CompressionSettings> };
+export type SettingsOverrides = Partial<Omit<Settings, 'home' | 'compression' | 'curator' | 'skills'>> & {
+  compression?: Partial<CompressionSettings>;
+  curator?: Partial<Omit<CuratorSettings, 'backup'>> & { backup?: Partial<CuratorSettings['backup']> };
+  skills?: Partial<SkillSettings>;
+};
 type LegacyCompressionKey = 'compressionEnabled' | 'compressionThreshold' | 'compressionTargetRatio'
   | 'compressionSummaryChars' | 'compressionTailMessages' | 'compressionToolChars' | 'compressionTimeoutMs';
 const LEGACY_DEFAULTS = {
@@ -28,6 +35,7 @@ const DEFAULTS: Omit<Settings, 'home' | LegacyCompressionKey> = {
   mode: 'reference', providerMode: 'learner', provider: 'demo', model: 'local-model', baseUrl: 'http://127.0.0.1:11434/v1',
   maxSteps: 8, contextChars: 24_000, turnTimeoutMs: 120_000, providerTimeoutMs: 30_000, autoReflect: false, plugins: [],
   compression: DEFAULT_COMPRESSION, compressionMemoryFlush: true,
+  curator: DEFAULT_CURATOR, skills: DEFAULT_SKILLS, auxiliary: {},
 };
 
 /**
@@ -93,6 +101,20 @@ export function loadSettings(home?: string, overrides: SettingsOverrides = {}): 
   const data: Record<string, unknown> = { ...DEFAULTS, ...LEGACY_DEFAULTS, ...preset, ...source, ...explicit };
   const compression = compressionSettings({ ...compressionLayer(source), ...compressionLayer(explicit) });
   data.compression = compression;
+  const curatorBase = curatorSettings(source.curator);
+  curatorSettings(explicit.curator); skillSettings(explicit.skills);
+  const curatorOverride = (explicit.curator ?? {}) as SettingsOverrides['curator'];
+  data.curator = curatorSettings({ ...curatorBase, ...curatorOverride, backup: { ...curatorBase.backup, ...curatorOverride?.backup } });
+  data.skills = skillSettings({ ...skillSettings(source.skills), ...(explicit.skills ?? {}) as Partial<SkillSettings> });
+  const auxiliary = data.auxiliary;
+  if (!isRecord(auxiliary) || Object.keys(auxiliary).some(key => key !== 'curator')) throw new Error('Invalid auxiliary config');
+  if (auxiliary.curator !== undefined) {
+    const route = auxiliary.curator;
+    if (!isRecord(route) || Object.keys(route).some(key => !['provider', 'model', 'baseUrl'].includes(key))) throw new Error('Invalid auxiliary.curator config');
+    if (route.provider !== undefined && !['demo', 'compatible', 'kimi'].includes(String(route.provider))) throw new Error('Invalid auxiliary.curator.provider');
+    for (const key of ['model', 'baseUrl']) if (route[key] !== undefined && (typeof route[key] !== 'string' || !route[key].trim())) throw new Error(`Invalid auxiliary.curator.${key}`);
+  }
+  (data.skills as SkillSettings).external_dirs = (data.skills as SkillSettings).external_dirs.map(path => resolve(root, path));
   // 兼容调用者读取旧属性时看到的值必须与实际运行链路一致。
   data.compressionEnabled = compression.enabled;
   data.compressionThreshold = compression.threshold;

@@ -6,6 +6,7 @@ import { fromWireMessage, isRecord, toWireMessage, validateModelResponse,
   type Message, type ModelResponse, type Provider, type ToolSchema } from './models.js';
 import { MEMORY_FLUSH_TASK, SUMMARY_SECTIONS, SUMMARY_TASK } from './context-engine.js';
 import { REFLECTION_TASK } from '../evolution/reflection.js';
+import { CURATOR_TASK } from '../curator/prompt.js';
 
 /** 确定性的离线模拟器，用于稳定复现模型响应与工具调用流程。 */
 export class DemoProvider implements Provider {
@@ -22,6 +23,7 @@ export class DemoProvider implements Provider {
     }
     if (messages[0]?.content.startsWith(MEMORY_FLUSH_TASK)) return { content: '离线演示不自动推断新的长期事实。' };
     if (messages[0]?.content.startsWith(REFLECTION_TASK)) return demoReflection(messages, _tools);
+    if (messages[0]?.content.startsWith(CURATOR_TASK)) return { content: 'Demo provider: Curator pipeline exercised; semantic consolidation requires a configured model.\n```yaml\nconsolidations: []\nprunings: []\n```' };
     if (last.role === 'tool') {
       const results: string[] = [];
       for (let i = messages.length - 1; i >= 0 && messages[i].role === 'tool'; i--) results.unshift(messages[i].content);

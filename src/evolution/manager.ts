@@ -1,7 +1,9 @@
 /** 可追溯的候选 → 显式审核 → Skill；不自动修改源码。 */
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { SkillRepository } from '../curator/repository.js';
+import { collectFiles, locked } from '../curator/files.js';
 import { assertSafeFile, atomicWrite, canonicalDirectory, pathExists, readBoundedFile } from '../memory/files.js';
 import { MAX_SKILL_BYTES, SkillCatalog, validateSkillName } from '../skills/catalog.js';
 import { MAX_PROPOSAL_CHARS, type ReflectionLibrary, type SkillUpdate } from './reflection.js';
@@ -23,7 +25,7 @@ export class EvolutionManager {
   readonly root: string;
   readonly skillsRoot: string;
 
-  constructor(root: string, skillsRoot: string) {
+  constructor(root: string, skillsRoot: string, readonly repository = new SkillRepository(dirname(skillsRoot))) {
     this.root = canonicalDirectory(root);
     this.skillsRoot = canonicalDirectory(skillsRoot);
   }
@@ -56,8 +58,10 @@ export class EvolutionManager {
   library(): ReflectionLibrary {
     const catalog = () => { const skills = new SkillCatalog([this.skillsRoot]); skills.discover(); return skills; };
     return {
-      list: () => [...catalog().skills.values()].map(({ name, description }) => ({ name, description })),
+      list: () => this.repository.rows().filter(row => !row.locked && !row.disabled && !['external', 'installed', 'bundled'].includes(row.provenance)).map(({ name, description }) => ({ name, description })),
       read: name => {
+        const row = this.repository.get(name);
+        if (row.locked || ['external', 'installed', 'bundled'].includes(row.provenance)) throw new Error('Skill is protected from reflection updates');
         const skills = catalog(), content = skills.read(name);
         return { name, description: skills.skills.get(name)!.description, content,
           hash: createHash('sha256').update(content).digest('hex') };
@@ -93,6 +97,22 @@ export class EvolutionManager {
   get(id: string): Proposal { return this.read(id); }
 
   approve(id: string, name?: string, description?: string): string {
+    return locked(this.skillsRoot, 'mutation', () => {
+      const proposal = this.read(id), target = proposal.action === 'update' ? proposal.skillName! : name;
+      const row = target ? this.repository.rows().find(row => row.name === target) : undefined;
+      if (row?.locked) throw new Error('Skill is locked');
+      const before = row ? collectFiles(dirname(row.path)).map(file => ({ ...file, path: relative(this.skillsRoot, join(dirname(row.path), file.path)) })) : [];
+      const path = this.approveUnlocked(id, name, description);
+      const actual = target!;
+      try { if (proposal.action === 'update') this.repository.activity(actual, 'patch'); else this.repository.created(actual, 'agent'); }
+      catch (error) { this.repository.ledger.warnings.push(`Usage telemetry: ${String(error)}`); }
+      const after = collectFiles(dirname(path)).map(file => ({ ...file, path: relative(this.skillsRoot, join(dirname(path), file.path)) }));
+      this.repository.ledger.record({ actor: 'agent', action: proposal.action === 'update' ? 'patch' : 'create', skill: actual, session_id: proposal.sessionId }, before, after);
+      return path;
+    });
+  }
+
+  private approveUnlocked(id: string, name?: string, description?: string): string {
     const proposal = this.read(id);
     if (proposal.status !== 'pending') throw new Error('Proposal has already been approved');
     if (proposal.action === 'update') return this.approveUpdate(proposal, name, description);

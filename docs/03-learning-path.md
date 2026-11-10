@@ -198,3 +198,17 @@ npm run build
 `npm test` 覆盖基础设施、参考实现及已完成学习算法的回归；`check --mode learner` 独立验收学习者算法的具名契约。两者应分别运行，不能用测试套件通过代替 learner 检查。完成练习后还应补充自己的边界案例，并跑通 learner 对话、记忆召回、两种连接器和候选审核闭环。
 
 中断或超时不能回滚已发生的外部副作用；忽略 signal 的插件工作还可能继续。框架会传播取消并避免将其写成成功缓存，调试失败与重试时仍需检查实际结果，详见 [Gateway 边界](05-gateway.md)。
+
+## L5 之后：先读已接入的 Curator
+
+Curator 的实现已放在 `src/curator/`，不再是待做的基础归档练习。先读 [完整流程、配置和源码入口](04-memory-and-extensions.md#curator整库维护)，再运行：
+
+```bash
+node --import tsx --test tests/curator.test.ts
+npm run dev -- curator status --home /tmp/my-hermes-curator-study
+npm run dev -- curator run --dry-run --consolidate --home /tmp/my-hermes-curator-study
+```
+
+推荐断点顺序：`Curator.due` → `transitions` → `modelReview` → `curatorTools` → `SkillRepository.batch` → `SkillLedger.undo`。先理解确定性维护，再跟踪脚本化模型合并两个技能的测试，最后故意让批处理第二项失败，观察第一项和统计如何被撤回。
+
+Persistent Goals 仍是下一块内容，尚未注册为 L6 验收。它应该在完整主 Agent 回合之外维护目标状态和预算，完成一轮后判断 continue/done/blocked/wait；不能直接把 Curator 的定时器或 L5 的反思循环当作 Goals。
