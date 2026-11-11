@@ -7,6 +7,7 @@ import { fromWireMessage, isRecord, toWireMessage, validateModelResponse,
 import { MEMORY_FLUSH_TASK, SUMMARY_SECTIONS, SUMMARY_TASK } from './context-engine.js';
 import { REFLECTION_TASK } from '../evolution/reflection.js';
 import { CURATOR_TASK } from '../curator/prompt.js';
+import { GOAL_CONTINUATION, GOAL_DRAFT_TASK, GOAL_JUDGE_TASK } from '../goals/prompts.js';
 
 /** 确定性的离线模拟器，用于稳定复现模型响应与工具调用流程。 */
 export class DemoProvider implements Provider {
@@ -14,6 +15,24 @@ export class DemoProvider implements Provider {
     signal?.throwIfAborted();
     const last = messages.at(-1);
     if (!last) throw new Error('No messages');
+    if (messages[0]?.content.startsWith(GOAL_JUDGE_TASK)) {
+      const evidence = JSON.parse(last.content) as { goal: string; last_response: string };
+      let complete = false;
+      if (evidence.goal.trim().startsWith('/calc ') && evidence.last_response.startsWith('工具结果：')) {
+        try {
+          const result: unknown = JSON.parse(evidence.last_response.slice('工具结果：'.length));
+          complete = isRecord(result) && result.ok === true && typeof result.result === 'number' && Number.isFinite(result.result);
+        } catch { /* 工具报错或缺少结果不能作为目标已完成的证据。 */ }
+      }
+      return { content: JSON.stringify(complete ? { verdict: 'done', reason: 'Demo calculator returned a tool result.' }
+        : { verdict: 'blocked', reason: 'Demo mode cannot verify this objective; configure a real working model and goal judge.' }) };
+    }
+    if (messages[0]?.content.startsWith(GOAL_DRAFT_TASK)) return { content: JSON.stringify({ outcome: last.content, verification: 'Provide concrete results that satisfy the objective.', boundaries: 'Stay within the explicitly requested work.' }) };
+    if (last.role === 'user' && last.content.startsWith(GOAL_CONTINUATION)) {
+      const goal = /^Goal: (.*)$/mu.exec(last.content)?.[1] ?? '';
+      if (goal.startsWith('/calc ')) return { content: '', toolCalls: [{ id: randomUUID(), name: 'calculator', arguments: { expression: goal.slice(6) } }] };
+      return { content: '[demo] Persistent Goals can schedule this turn, but this offline provider cannot carry out the objective.' };
+    }
     // 离线演示只生成摘录，便于稳定验收压缩控制流；真实语义质量需要 Kimi 等模型验证。
     if (messages[0]?.content.startsWith(SUMMARY_TASK)) {
       const limit = Number(messages[0].content.match(/最多 (\d+) 字符/u)?.[1] ?? 1000);
@@ -46,13 +65,13 @@ export class DemoProvider implements Provider {
 }
 
 export interface CompatibleProviderOptions {
-  baseUrl: string; model: string; apiKey?: string; timeoutMs?: number; maxResponseBytes?: number;
+  baseUrl: string; model: string; apiKey?: string; timeoutMs?: number; maxResponseBytes?: number; maxTokens?: number;
 }
 export class OpenAICompatibleProvider implements Provider {
   private readonly url: string;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
-  constructor(private readonly options: CompatibleProviderOptions) {
+  constructor(protected readonly options: CompatibleProviderOptions) {
     const parsed = new URL(options.baseUrl);
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
       throw new Error('baseUrl must be an HTTP(S) API root without credentials, query, or fragment');
@@ -60,6 +79,7 @@ export class OpenAICompatibleProvider implements Provider {
     if (typeof options.model !== 'string' || !options.model.trim()) throw new Error('Model is required');
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.maxResponseBytes = options.maxResponseBytes ?? 2_000_000;
+    if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1)) throw new Error('Invalid maxTokens');
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0 || this.timeoutMs > 2_147_483_647 ||
         !Number.isSafeInteger(this.maxResponseBytes) || this.maxResponseBytes < 1) throw new Error('Invalid provider budget');
     this.url = options.baseUrl.replace(/\/$/, '') + '/chat/completions';
@@ -99,7 +119,7 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   protected buildRequestBody(messages: Message[], tools: ToolSchema[]): Record<string, unknown> {
-    return { model: this.options.model, messages: messages.map(toWireMessage), max_tokens: 2048,
+    return { model: this.options.model, messages: messages.map(toWireMessage), max_tokens: this.options.maxTokens ?? 2048,
       ...(tools.length ? { tools, tool_choice: 'auto' } : {}) };
   }
 

@@ -1,4 +1,8 @@
-/** L5 的输入/输出边界；模型调用本身在 learning/exercises.ts，方便逐步调试。 */
+/**
+ * L5 的输入/输出边界；模型调用本身在 learning/exercises.ts，方便逐步调试。
+ * 这里问“本轮有什么可复用经验”；goals/prompts.ts 问“总目标是否完成、要不要继续”。
+ * 复盘生成待审 Skill，Goal 裁判生成状态决策，二者不共用 prompt 或工具权限。
+ */
 import { isRecord, requestSize, validateModelResponse, type Message } from '../core/models.js';
 import { elide, redact } from '../core/compression/text.js';
 

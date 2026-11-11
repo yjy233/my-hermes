@@ -9,7 +9,7 @@ export class ReferenceKimiProvider extends OpenAICompatibleProvider {
   protected override buildRequestBody(messages: Message[], tools: ToolSchema[]): Record<string, unknown> {
     const body = super.buildRequestBody(messages, tools);
     delete body.max_tokens;
-    return { ...body, reasoning_effort: 'low', max_completion_tokens: 8192, stream: false };
+    return { ...body, reasoning_effort: 'low', max_completion_tokens: this.options.maxTokens ?? 8192, stream: false };
   }
   protected override parseResponse(data: unknown): ModelResponse {
     const choice = isRecord(data) && Array.isArray(data.choices) ? data.choices[0] : undefined;

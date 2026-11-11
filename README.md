@@ -2,7 +2,7 @@
 
 一个以 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 为主要参考的 TypeScript Agent 学习项目：外围框架可运行，核心算法留给学习者，完整参考实现可随时观察和对照。
 
-包含 **Core、Gateway、连接器、短长期记忆、Skills、Plugin、自进化候选与审核**。需要 **Node.js 24+**；运行时仅用内置模块。Kimi Provider 已完整实现，Demo 与阶段验收可离线运行。
+包含 **Core、Gateway、连接器、短长期记忆、Skills、Plugin、自进化候选与审核、Curator、Persistent Goals**。需要 **Node.js 24+**；运行时仅用内置模块。Kimi Provider 已完整实现，Demo 与阶段验收可离线运行。
 
 ![项目架构](docs/images/architecture.png)
 
@@ -43,6 +43,15 @@ npm run build
 开发入口通过 `tsx` 运行 TypeScript。构建后也可用 `node dist/cli.js init` 和 `node dist/cli.js chat`；`typescript`、`tsx` 等只属于开发依赖，运行构建产物不需要第三方运行时包。
 
 ## 自己实现核心
+
+L5 之后可以继续学习已接入的 [Curator 与 Persistent Goals](docs/04-memory-and-extensions.md#persistent-goals跨回合推进目标)。Goals 通过显式 `/goal set` 开启：每个完整任务回合结束后验收，按 `continue/done/blocked/wait` 决定续接或停止；普通聊天默认不走裁判。离线体验：
+
+```bash
+npm run dev -- goal set '/calc (2+3)*4' --max-turns 3 --provider demo --mode reference --home /tmp/my-hermes-goals-study
+npm run dev -- goal status --home /tmp/my-hermes-goals-study
+```
+
+目标状态保存在 SQLite，交互 CLI/Gateway 重启可恢复。进程退出后不会自行运行；Demo 只演示计算目标，通用任务需要实际模型及相应工具。
 
 - Core 的 `--mode reference/learner` 选择完整算法或 [exercises.ts](src/learning/exercises.ts) 中的 L1～L5。
 - Kimi 的 `--provider-mode learner/reference` 独立选择 [kimi.ts](src/core/providers/kimi.ts) 中已完成的主实现或对照版；主实现不会回退到参考版。

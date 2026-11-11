@@ -349,4 +349,137 @@ npm run dev -- curator reject PENDING_ID
 - PID 锁只回收确认死亡的进程，避免上游按一小时陈旧时间抢占仍在执行的长整理。后台 CLI 用独立进程，退出原终端命令后仍可完成；运行中断后保存的状态和审计可查看，但不会从半轮模型上下文继续执行。
 - 工具沿用项目的有界消息协议、技能 frontmatter 格式和文件预算。备份总大小上限 256 MiB；超限会明确报错，不截断文件。本次没有迁移上游完整 YAML frontmatter、市场安装系统和任意 shell 执行。
 
-这些边界不影响学习 Curator 的核心链路。下一块 Persistent Goals 是“跨多个主任务回合推进目标”的外层控制器，不属于 Curator，也还没有实现。
+这些边界不影响学习 Curator 的核心链路。下面的 Persistent Goals 是“跨多个主任务回合推进目标”的外层控制器，已独立接入，不属于 Curator。
+
+## Persistent Goals：跨回合推进目标
+
+这是对本机 Hermes `hermes_cli/goals.py` 以及 `cli_loops_mixin.py` 调度逻辑的独立 TypeScript 实现，prompt 也重新编写。核心结构相同：显式设定会话目标，完成一个主任务回合后先验收，再决定是否继续。它不会给所有聊天默认开启目标模式。
+
+### 两层循环和触发点
+
+```mermaid
+flowchart TD
+    User[用户输入] --> Gateway[Gateway 授权、路由、去重]
+    Gateway --> Runtime[GoalRuntime]
+    Runtime --> Command{是否为目标命令}
+    Command -->|goal set / resume| State[SQLite 目标状态 active]
+    Command -->|普通消息| Agent[Agent.run 完整回合]
+    State --> Queue[调度下一步]
+    Queue --> Agent
+    Agent --> Loop[L1 模型 → 工具 → 模型]
+    Loop --> Commit[最终回答与轨迹落盘]
+    Commit --> Active{会话有 active goal?}
+    Active -->|无| End[返回答复，结束本轮]
+    Active -->|有| Count[记录一轮 → 质量门 → 裁判]
+    Count --> Verdict{裁判结论}
+    Verdict -->|continue| Prompt[续接提示词，复用同一会话]
+    Prompt --> Queue
+    Verdict -->|done| Done[完成]
+    Verdict -->|blocked| Paused[暂停，等待用户处理]
+    Verdict -->|wait| Wait[保存等待条件]
+    Wait --> Poll[轮询条件，不请求模型]
+    Poll -->|满足 / 到期| Queue
+```
+
+`Agent.run` 是一次完整的用户回合，内部 L1 可以连续调用多次模型、工具。`maxSteps` 限制这层内部步数；`max_turns` 限制 Goals 自动推进的完整回合数，默认 20。有活动目标时，真实用户回合和自动续接回合都会计数；命令、状态查询和等待轮询不计数。在 WAIT 条件仍成立时，插入的普通聊天也不消耗目标轮数。
+
+答案先持久化并返回，后台再开始判定。自动续接复用会话键、scope 和原有 `Agent.run`，因此历史、记忆、压缩和工具注册仍走现有链路。它没有伪造一个 Gateway 入站事件。真实用户输入优先于下一次自动续接；同会话主任务串行执行，用户输入可以打断正在等待结果的裁判。
+
+### 先跑起来，再读代码
+
+```bash
+# 离线例子：真实走 calculator 工具，然后裁判判 done。
+npm run dev -- goal set '/calc (2+3)*4' --max-turns 3 --provider demo --mode reference --home /tmp/my-hermes-goals-study
+npm run dev -- goal status --home /tmp/my-hermes-goals-study
+
+# 交互模式：可随时输入下表中的 /goal 和 /subgoal 命令。
+npm run dev -- chat --provider demo --mode reference --home /tmp/my-hermes-goals-study
+```
+
+Demo 只用固定规则验证计算目标；其他通用目标会明确暂停。实际任务要配置 Kimi/compatible 模型，并确保 Agent 已注册完成任务需要的工具。Goals 不会自动增加文件、终端或外部服务能力。
+
+| 交互命令 | 行为 |
+| --- | --- |
+| `/goal set 目标` 或 `/goal 目标` | 设置并立即推进当前会话的目标 |
+| `/goal set --turns 8 目标` | 设置本次目标预算；独立 CLI 用 `goal set TEXT --max-turns 8` |
+| `/goal status`、`/goal show`、`/goal` | 只读状态，不启动、取消或重置目标 |
+| `/goal history` | 读取当前会话已持久化的消息，包括自动续接回合 |
+| `/goal pause`、`/goal resume` | 暂停；恢复会重新给予 `max_turns` 轮预算，并清零裁判连续故障计数 |
+| `/goal clear` | 标记 cleared，保留历史，不再自动推进 |
+| `/goal budget 10` | 修改目标最大轮数；不会自动恢复已暂停目标 |
+| `/goal draft 目标` | 辅助模型生成完成合同，然后设置并开始目标；草拟失败则带提示使用原始目标 |
+| `/subgoal 一个验收点`、`/subgoal remove 1`、`/subgoal clear` | 维护子目标列表；`/subgoal` 只读 |
+| `/goal wait 60`、`/goal wait pid 12345`、`/goal unwait` | 时间等待、观察进程退出、解除等待 |
+| `/goal gate add npm test`、`/goal gate list`、`/goal gate remove 1` | 配置本地 shell 质量门，`/goal gate clear` 清空 |
+
+目标以命令关键字开头时，用 `/goal -- 原始目标` 避免被解析成控制命令。独立 CLI 的 `goal` 子命令对应 `/goal`；子目标可在聊天内输入，也可用 `chat --message '/subgoal ...'`。
+
+### 裁判、prompt 和失败处理
+
+续接 prompt 放在 [prompts.ts](../src/goals/prompts.ts)：包含目标、完成合同、子目标，以及要求下一步采取具体行动、提供证据、遇到阻塞明确说明的指令。它是同一会话中的下一条工作输入，先前对话仍可见。
+
+完成合同字段为 `outcome`（交付物）、`verification`（验证方法）、`constraints`（限制）、`boundaries`（范围）、`stop_when`（停止条件）。可以在目标后用独立的 `字段: 内容` 行填写，也可通过 draft 生成。CLI 参数可携带实际换行，例如：
+
+```bash
+npm run dev -- goal set $'整理说明\nverify: 列出运行命令\nboundaries: 只使用已有信息'
+```
+
+子目标补充验收清单，不是另开多个 Agent。
+
+裁判使用独立、无工具的请求，输入包含目标前 2000 字符、最新回答前 4000 字符，以及合同、子目标、可观测的后台任务和委派数量。输出 JSON `verdict/reason`，WAIT 另带等待对象。它只基于所给证据判断；硬性验证应使用质量门。默认请求超时 30 秒、输出预算 4096 token，可独立配置 `auxiliary.goal_judge`。
+
+| 结果 | 后续动作 |
+| --- | --- |
+| `continue` | 未达预算则生成续接输入，否则暂停 |
+| `done` | 标记完成；最后一个预算回合也可以判完成 |
+| `blocked` | 暂停并记录原因，不冒充完成 |
+| `wait` | 保存可观测的 PID/session 或明确时间条件，保持 active |
+| 无效 JSON | 本轮按 continue 处理；连续 3 次暂停 |
+| 请求失败或超时 | 本轮按 continue 处理；连续 5 次暂停；只保存错误类别 |
+| 用户取消 | 停止等待，不计成裁判故障，也不发布迟到结果 |
+
+两个故障计数分别维护，不同结果会重置不对应的连续计数。WAIT 每 5 秒检查一次条件，不反复请求裁判。PID/session 等待最多 30 分钟；时间等待使用指定截止时间，委派数量下降也可提前唤醒。唤醒后先查剩余轮数，预算耗尽会暂停。
+
+质量门先于裁判运行，全部通过才判断是否完成。失败时跳过模型裁判，把命令、退出码和最多 3000 字符输出尾部带给下一轮修复；默认每条命令超时 300 秒、允许 3 次修复重试（第 4 次失败暂停），预算耗尽也暂停。命令固定使用注册时的工作目录，超时/取消会终止进程组。只有本地用户显式添加的命令可执行，模型不能添加；HTTP/JSONL 不接受 shell 质量门注册，也不执行从本地带来的门。
+
+配置片段（合入已有 `config.json`，不含凭证）：
+
+```json
+{
+  "goals": { "max_turns": 20, "judge_timeout_ms": 30000, "poll_interval_ms": 5000 },
+  "auxiliary": { "goal_judge": { "provider": "kimi", "max_tokens": 4096 } }
+}
+```
+
+省略辅助路由时沿用主 provider/model；可以指定 `model`、`baseUrl`。管理命令延迟初始化模型，因此查看状态不要求 API key。
+
+### SQLite 状态与重启
+
+一会话一个当前目标，保存在 `sessions.db` 的 `state_meta`，键为 `goal:<sessionId>`，值是 JSON；成功任务轨迹仍在 `messages`。没有另写 Goals JSONL。`status` 表达 active/paused/done/cleared；本项目另加 `phase` 作为恢复游标：
+
+| phase | 含义与恢复行为 |
+| --- | --- |
+| `run` | 下一次可以调用主 Agent |
+| `running` | 已记录调用前消息水位，主回合可能正在执行 |
+| `judge` | 完整回答已落盘并计数，等待验收 |
+| `waiting` | 等待外部条件，暂不执行主 Agent |
+| `idle` | 目标已暂停、完成或清除 |
+
+写入用 revision + SQLite 条件更新（CAS）。裁判 await 期间如果用户暂停、替换目标或修改验收条件，旧结果无法覆盖新状态。消息 ID 水位保证同一完整回合只计一次；execution_id 区分暂停/恢复前后的执行。SQL 与索引见 [存储参考](10-memory-storage-reference.md#66-目标状态的键值表与条件更新)。
+
+交互 CLI 只恢复当前选定会话；Gateway 只恢复当前授权范围内的非 CLI 会话。若退出发生在回答提交之后，恢复时只补验收；若半轮没有提交，暂停并要求检查已有工具副作用后显式恢复，不自动重放。`goal status` 等独立管理命令不会偷偷启动旧目标。
+
+持久化保留的是状态，进程退出后没有独立守护进程继续工作。单次 CLI 和 JSONL EOF 会等待当前可执行工作，遇到 WAIT 就落盘退出；要持续观察等待条件，使用交互 CLI 或长驻 Gateway。JSONL 自动答复以 `goal.answer/goal.decision/goal.error` 事件输出，附带会话身份；HTTP 当前通过同会话 `/goal status`、`/goal history` 查询进度，没有主动推送协议。
+
+### 学习入口与适配边界
+
+按这个顺序读，相关衔接处有中文注释：
+
+1. [commands.ts](../src/goals/commands.ts)：用户什么时候开启目标模式。
+2. [types.ts](../src/goals/types.ts)、[manager.ts](../src/goals/manager.ts)：状态、预算、门、裁判、错误处理和 CAS。
+3. [runtime.ts](../src/goals/runtime.ts)：完整回合外层调度、用户优先、取消和恢复。
+4. [prompts.ts](../src/goals/prompts.ts)、[provider.ts](../src/goals/provider.ts)：续接 prompt、裁判输入和模型路由。
+5. [cli.ts](../src/cli.ts)、[Agent](../src/core/agent.ts)：入口接线、落盘边界及 L5 独立触发。
+6. [状态机测试](../tests/goals.test.ts)、[CLI/JSONL 测试](../tests/goals-cli.test.ts)：继续→完成、异常、暂停、WAIT、抢占、重启、真实工具回合。
+
+与 Hermes 对齐的是上述目标控制机制，不是全部平台基础设施。本项目目前没有 Hermes 的后台终端 session 注册表及委派调度器：时间等待和 PID 等待可直接使用；session 等待、后台任务列表和委派唤醒由 `GoalEnvironment` 注入真实观测能力，默认拒绝未知 session，不伪造任务已经存在。现有 CLI、JSONL、HTTP 已接入；平台消息推送仍需对应连接器。

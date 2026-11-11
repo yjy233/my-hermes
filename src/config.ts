@@ -5,6 +5,7 @@ import type { Mode } from './learning/types.js';
 import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL } from './core/providers/kimi-shared.js';
 import { compressionSettings, DEFAULT_COMPRESSION, type CompressionSettings } from './core/compression/settings.js';
 import { curatorSettings, skillSettings, DEFAULT_CURATOR, DEFAULT_SKILLS, type CuratorSettings, type SkillSettings } from './curator/settings.js';
+import { goalSettings, DEFAULT_GOALS, type GoalSettings } from './goals/types.js';
 
 export interface Settings {
   home: string; mode: Mode; providerMode: Mode; provider: 'demo' | 'compatible' | 'kimi'; model: string; baseUrl: string;
@@ -15,12 +16,17 @@ export interface Settings {
   compressionSummaryChars: number; compressionTailMessages: number; compressionToolChars: number;
   compressionTimeoutMs: number; compressionMemoryFlush: boolean;
   curator: CuratorSettings; skills: SkillSettings;
-  auxiliary: { curator?: { provider?: 'demo' | 'compatible' | 'kimi'; model?: string; baseUrl?: string } };
+  goals: GoalSettings;
+  auxiliary: {
+    curator?: { provider?: 'demo' | 'compatible' | 'kimi'; model?: string; baseUrl?: string };
+    goal_judge?: { provider?: 'demo' | 'compatible' | 'kimi'; model?: string; baseUrl?: string; max_tokens?: number };
+  };
 }
-export type SettingsOverrides = Partial<Omit<Settings, 'home' | 'compression' | 'curator' | 'skills'>> & {
+export type SettingsOverrides = Partial<Omit<Settings, 'home' | 'compression' | 'curator' | 'skills' | 'goals'>> & {
   compression?: Partial<CompressionSettings>;
   curator?: Partial<Omit<CuratorSettings, 'backup'>> & { backup?: Partial<CuratorSettings['backup']> };
   skills?: Partial<SkillSettings>;
+  goals?: Partial<GoalSettings>;
 };
 type LegacyCompressionKey = 'compressionEnabled' | 'compressionThreshold' | 'compressionTargetRatio'
   | 'compressionSummaryChars' | 'compressionTailMessages' | 'compressionToolChars' | 'compressionTimeoutMs';
@@ -35,7 +41,7 @@ const DEFAULTS: Omit<Settings, 'home' | LegacyCompressionKey> = {
   mode: 'reference', providerMode: 'learner', provider: 'demo', model: 'local-model', baseUrl: 'http://127.0.0.1:11434/v1',
   maxSteps: 8, contextChars: 24_000, turnTimeoutMs: 120_000, providerTimeoutMs: 30_000, autoReflect: false, plugins: [],
   compression: DEFAULT_COMPRESSION, compressionMemoryFlush: true,
-  curator: DEFAULT_CURATOR, skills: DEFAULT_SKILLS, auxiliary: {},
+  curator: DEFAULT_CURATOR, skills: DEFAULT_SKILLS, goals: DEFAULT_GOALS, auxiliary: {},
 };
 
 /**
@@ -106,13 +112,16 @@ export function loadSettings(home?: string, overrides: SettingsOverrides = {}): 
   const curatorOverride = (explicit.curator ?? {}) as SettingsOverrides['curator'];
   data.curator = curatorSettings({ ...curatorBase, ...curatorOverride, backup: { ...curatorBase.backup, ...curatorOverride?.backup } });
   data.skills = skillSettings({ ...skillSettings(source.skills), ...(explicit.skills ?? {}) as Partial<SkillSettings> });
+  goalSettings(explicit.goals);
+  data.goals = goalSettings({ ...goalSettings(source.goals), ...(explicit.goals ?? {}) as Partial<GoalSettings> });
   const auxiliary = data.auxiliary;
-  if (!isRecord(auxiliary) || Object.keys(auxiliary).some(key => key !== 'curator')) throw new Error('Invalid auxiliary config');
-  if (auxiliary.curator !== undefined) {
-    const route = auxiliary.curator;
-    if (!isRecord(route) || Object.keys(route).some(key => !['provider', 'model', 'baseUrl'].includes(key))) throw new Error('Invalid auxiliary.curator config');
-    if (route.provider !== undefined && !['demo', 'compatible', 'kimi'].includes(String(route.provider))) throw new Error('Invalid auxiliary.curator.provider');
-    for (const key of ['model', 'baseUrl']) if (route[key] !== undefined && (typeof route[key] !== 'string' || !route[key].trim())) throw new Error(`Invalid auxiliary.curator.${key}`);
+  if (!isRecord(auxiliary) || Object.keys(auxiliary).some(key => !['curator', 'goal_judge'].includes(key))) throw new Error('Invalid auxiliary config');
+  for (const slot of ['curator', 'goal_judge'] as const) if (auxiliary[slot] !== undefined) {
+    const route = auxiliary[slot];
+    if (!isRecord(route) || Object.keys(route).some(key => !['provider', 'model', 'baseUrl', ...(slot === 'goal_judge' ? ['max_tokens'] : [])].includes(key))) throw new Error(`Invalid auxiliary.${slot} config`);
+    if (route.provider !== undefined && !['demo', 'compatible', 'kimi'].includes(String(route.provider))) throw new Error(`Invalid auxiliary.${slot}.provider`);
+    for (const key of ['model', 'baseUrl']) if (route[key] !== undefined && (typeof route[key] !== 'string' || !route[key].trim())) throw new Error(`Invalid auxiliary.${slot}.${key}`);
+    if (route.max_tokens !== undefined && (!Number.isSafeInteger(route.max_tokens) || (route.max_tokens as number) < 1)) throw new Error('Invalid auxiliary.goal_judge.max_tokens');
   }
   (data.skills as SkillSettings).external_dirs = (data.skills as SkillSettings).external_dirs.map(path => resolve(root, path));
   // 兼容调用者读取旧属性时看到的值必须与实际运行链路一致。

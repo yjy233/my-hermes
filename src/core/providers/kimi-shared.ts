@@ -7,6 +7,7 @@ export interface KimiProviderOptions {
   model?: string;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  maxTokens?: number;
 }
 export type ResolvedKimiOptions = Required<KimiProviderOptions>;
 export function resolveKimiOptions(options: KimiProviderOptions): ResolvedKimiOptions {
@@ -17,8 +18,10 @@ export function resolveKimiOptions(options: KimiProviderOptions): ResolvedKimiOp
     apiKey: options.apiKey, baseUrl: options.baseUrl ?? KIMI_DEFAULT_BASE_URL,
     model: options.model ?? KIMI_DEFAULT_MODEL, timeoutMs: options.timeoutMs ?? 30_000,
     maxResponseBytes: options.maxResponseBytes ?? 2_000_000,
+    maxTokens: options.maxTokens ?? 8192,
   };
   const url = new URL(resolved.baseUrl);
+  if (!Number.isSafeInteger(resolved.maxTokens) || resolved.maxTokens < 1) throw new Error('Invalid Kimi maxTokens');
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new Error('Kimi baseUrl must be an HTTP(S) API root without credentials, query, or fragment');
   }

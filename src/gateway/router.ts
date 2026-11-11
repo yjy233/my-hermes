@@ -155,6 +155,8 @@ export class Gateway {
 
       // 5. 没有缓存才执行 Agent。sessionKey 定位当前对话；scope 决定记忆共享范围。
       // scope 由渠道 + 用户生成，同一用户跨会话共享，群内不同用户仍然隔离。
+      // CLI 接入时 agent 可以是包着 Agent 的 GoalRuntime；缓存命中不会再次运行目标命令或计数。
+      // 自动续接由 GoalRuntime 的会话队列执行，不复用这个外部 eventId，也不在持有本队列时递归 handle。
       const text = await this.agent.run(
         sessionKey, Gateway.scopeFor(message.channel, message.userId), message.text, signal,
       );

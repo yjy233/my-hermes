@@ -206,12 +206,12 @@ Gateway 的 [delivery ledger](https://github.com/NousResearch/hermes-agent/blob/
 
 **当前项目已接入 FTS5 词索引、trigram、BM25、稳定消息锚点和原文窗口读取。** LIKE 负责短中文、符号字面查询及能力缺失/零命中回退；没有向量检索。候选来自 [SessionStore](../src/memory/store.ts) 与 [HistorySearch](../src/memory/history-search.ts)，经 [L3](../src/learning/exercises.ts) 排序选取，再由 [历史工具](../src/core/history-tools.ts) 整理输出。
 
-2026-11-09 用临时新库实测，Node 内置 SQLite 为 3.50.4，FTS5 与 trigram 均可用。以下普通表和索引统计排除 `sqlite_sequence` 与 FTS shadow 对象：
+2026-11-11 接入 Goals 后用临时新库复测，Node 内置 SQLite 为 3.50.4，FTS5 与 trigram 均可用。以下普通表和索引统计排除 `sqlite_sequence` 与 FTS shadow 对象：
 
 | 初始化范围 | 普通表 | 显式普通 B-tree 索引 | 普通表主键／UNIQUE 自动索引 | FTS5 虚拟表 | 同步触发器 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 只有 `SessionStore` | 5 | 2 | 5 | 2 | 3 |
-| `SessionStore` 加 `Gateway` | 6 | 2 | 6 | 2 | 3 |
+| 只有 `SessionStore` | 6 | 2 | 6 | 2 | 3 |
+| `SessionStore` 加 `Gateway` | 7 | 2 | 7 | 2 | 3 |
 
 上述运行时另外产生 **8 张 FTS shadow table**，每个虚拟表各有 `_data`、`_idx`、`_docsize`、`_config`。它们是 SQLite 维护倒排索引的内部存储，不是 8 张项目业务表。`pragma_table_list` 分别将普通表、虚拟表与 shadow 表报告为 `table`、`virtual`、`shadow`；只统计 `sqlite_schema.type = 'table'` 会把三种对象相加。这里的 2 个显式 B-tree 索引也不包含 2 个全文虚拟表，更不包含 shadow 表内部的索引。
 
@@ -228,11 +228,12 @@ Gateway 的 [delivery ledger](https://github.com/NousResearch/hermes-agent/blob/
 | `context_checkpoints` | `session_id` 主键、`payload`、`message_count`、`compression_state` | 默认异步 L2 的工作消息列表、水位与冷却状态 |
 | `summary_checkpoints` | `session_id` 主键、`generation`、`covered_count`、`prefix_hash`、`summary`、`updated_at` | 可选 `ContextEngine` 的前缀摘要、代际和 SHA256 校验信息 |
 | `history_search_meta` | `key` 文本主键、`value` | 全文索引版本与 dirty 标记，决定首次回填和能力恢复后的重建；不保存原文和模型事实 |
+| `state_meta` | `key` 文本主键、`value` | 通用状态 JSON；Goals 使用 `goal:<sessionId>` 保存目标、预算、验收条件和恢复游标 |
 | `gateway_events` | `event_key` 文本主键、`payload_hash`、`session_key`、`response`、`completed_at` | Gateway 成功事件缓存与同事件不同内容的冲突检测 |
 
 `messages.session_id` 和两张检查点表的 `session_id` 都引用 `sessions.id`。`gateway_events.session_key` 是逻辑路由键，没有声明到 `sessions` 的数据库外键。不要据此假设删除会话会自动删除事件缓存。
 
-前五张由 SessionStore 初始化，`gateway_events` 由 Gateway 按需初始化。表定义：[会话存储](../src/memory/store.ts)、[检索元数据](../src/memory/history-search.ts)、[Gateway 事件存储](../src/gateway/router.ts)。
+前六张由 SessionStore 初始化，`gateway_events` 由 Gateway 按需初始化。表定义：[会话存储](../src/memory/store.ts)、[检索元数据](../src/memory/history-search.ts)、[Gateway 事件存储](../src/gateway/router.ts)。
 
 ```mermaid
 erDiagram
@@ -241,7 +242,7 @@ erDiagram
     sessions ||--o| summary_checkpoints : session_id
 ```
 
-`history_search_meta` 是独立索引状态表。`gateway_events` 不在这张外键图中：它通过应用层会话键关联，不能据图推断级联清理。
+`history_search_meta` 是独立索引状态表。`state_meta` 和 `gateway_events` 不在这张外键图中：前者把会话 ID 编入业务键，后者通过应用层会话键关联，均不能据图推断级联清理。
 
 `messages.payload` 保存完整 Message JSON，便于恢复 `toolCalls`、`toolCallId`、`reasoningContent` 等协议字段；`content` 另存同一条消息的正文，供全文索引与 LIKE 读取。这是同一消息在一行中的两种表示，会增加磁盘占用，但避免每次全文维护都先解析 JSON。两列由同一次序列化和 INSERT 产生，不能独立编辑其中一列后期待另一列自动同步。当前 role 从 `payload` 的 JSON 中读取，没有独立 role 列或 role 索引。
 
@@ -252,7 +253,7 @@ erDiagram
 | `messages_session` | `messages(session_id, id)` | 按会话顺序恢复原始消息，并支持按 ID 读取窗口与 keyset 翻页 |
 | `sessions_scope` | `sessions(scope)` | 支持按用户范围筛选和历史搜索连接 |
 
-`sessions.id` 与唯一 `session_key` 分别生成一个自动索引，两张检查点表的 `session_id` 主键各生成一个，`history_search_meta.key` 再生成一个，合计 5 个；Gateway 事件主键使其变为 6 个。这些 `sqlite_autoindex_*` 不算上表两个显式索引。`messages.id INTEGER PRIMARY KEY` 使用 rowid 身份，不另生成同类自动索引。
+`sessions.id` 与唯一 `session_key` 分别生成一个自动索引，两张检查点表的 `session_id` 主键各生成一个，`history_search_meta.key` 和 `state_meta.key` 各生成一个，合计 6 个；Gateway 事件主键使其变为 7 个。这些 `sqlite_autoindex_*` 不算上表两个显式索引。`messages.id INTEGER PRIMARY KEY` 使用 rowid 身份，不另生成同类自动索引。
 
 | 全文对象 | 定义要点 | 职责 |
 | --- | --- | --- |
@@ -320,6 +321,36 @@ history_read(session_id, around_message_id, limit)
 `readHistory` 库 API 的页内消息按 ID 升序，返回 `{ id, sessionId, message, createdAt }`，并保留存储的协议元数据。窗口默认 10 条、最多 50 条；around/before/after 三种锚点互斥，锚点必须属于目标会话。分页基于 `(session_id, id)`，不使用随新增记录移动的 OFFSET，也不要求全库 ID 在某个会话内连续。跨 scope 与不存在的会话使用相同拒绝信息。
 
 `history_read` 工具在此基础上移除旧 `reasoningContent`、将历史工具调用概括为工具名，并在总体输出预算内限制正文预览。它保留消息 ID、分页字段、`originalContentChars`、`contentOffset`、`contentTruncated` 与可用的 `nextContentOffset`。正文续读需固定 `around_message_id` 和单条消息；`content_chars` 默认 2000、范围 1～6000。字符偏移采用 JavaScript UTF-16 `.length`，不是 token。原文仍在数据库中，不因预览缩短而改写。使用示例、调试断点与离线演示见 [L3 历史检索](11-l3-history-retrieval.md)。
+
+### 6.6 目标状态的键值表与条件更新
+
+和 Hermes 的 `goal:<session_id>` 元数据设计对应，Goals 使用 `state_meta` 存一份目标 JSON，消息原文仍由 `messages` 保存。没有每次轮询新增一行，也没有独立 Goals JSONL：
+
+```sql
+CREATE TABLE IF NOT EXISTS state_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- 已知 sessionId 时按主键读取；主键自动索引足够，不需要另建 key 索引。
+SELECT value FROM state_meta WHERE key = ?;
+
+-- 首次创建；并发创建时只有一个成功。
+INSERT OR IGNORE INTO state_meta(key, value) VALUES (?, ?);
+
+-- 修改已有目标：value 参数分别是新 JSON、业务键、读取时的旧 JSON。
+UPDATE state_meta SET value = ? WHERE key = ? AND value = ?;
+
+-- 用 messages_session(session_id, id) 倒序取最新消息，恢复完成回合的水位。
+SELECT id, payload, created_at
+FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1;
+```
+
+最后一个 UPDATE 是 compare-and-set（CAS）：只有当前值仍等于读取时的值才写入，影响行数必须为 1。JSON 内的 `revision` 每次递增；旧裁判不能把用户刚暂停的目标写回 active。`key` 的主键索引先定位唯一行，再比较 value，不需要对整段 JSON 建索引。
+
+`GoalManager` 将 `status`、`phase`、`turns_used/max_turns`、contract、subgoals、gates、waiting、故障计数和消息水位一起存入 JSON。`phase` 和 `execution_id` 是本项目的恢复增强：完整回答已经落盘则补验收，半轮未提交则暂停避免重放副作用。消息提交与目标更新不是同一个事务，恢复逻辑明确处理二者之间退出的窗口。
+
+运行时启动先列出可恢复且已授权的会话，再逐个读取目标；当前没有跨全库按 JSON status 扫描的需求，因此没有 status 表达式索引。规模增大后再基于真实查询增加索引或独立列。完整控制流程见 [Goals](04-memory-and-extensions.md#persistent-goals跨回合推进目标)。
 
 ## 7. 只读检查一个实际数据库
 

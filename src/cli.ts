@@ -20,6 +20,7 @@ import { SkillCatalog } from './skills/index.js';
 import { loadEnvironmentFile } from './environment.js';
 import { createCurator, curatorCommand, runCuratorWorker, startBackground } from './curator/cli.js';
 import { Curator, CuratorScheduler } from './curator/curator.js';
+import { GoalManager, GoalRuntime, createGoalProvider } from './goals/index.js';
 
 function parse(argv: string[]) {
   return parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
@@ -38,6 +39,7 @@ function parse(argv: string[]) {
     'dry-run': { type: 'boolean' }, consolidate: { type: 'boolean' }, background: { type: 'boolean' },
     yes: { type: 'boolean' }, days: { type: 'string' }, compact: { type: 'boolean' },
     sort: { type: 'string' }, provenance: { type: 'string' }, 'all-unmanaged': { type: 'boolean' },
+    'max-turns': { type: 'string' },
     rollback: { type: 'string' }, limit: { type: 'string' }, sync: { type: 'boolean' }, synchronous: { type: 'boolean' }, json: { type: 'boolean' },
   } });
 }
@@ -50,6 +52,8 @@ Commands:
   gateway --connector jsonl|http [--allow-user ID] [--host 127.0.0.1] [--port 8765]
   skills list | skills read NAME
   evolve list | evolve show ID | evolve approve ID --name NAME --description TEXT
+  goal set TEXT [--max-turns N] | status | show | history | pause | resume | clear
+  goal draft TEXT | wait SECONDS | wait pid PID | unwait | gate add COMMAND | gate list
   curator status | run [--dry-run] [--consolidate] [--background] | pause | resume
   curator pin|unpin|lock|unlock|adopt|archive|restore NAME | unmanaged | archived
   curator prune|purge [--days N] [--dry-run|--yes] | backup | backups | rollback [ID]
@@ -134,7 +138,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
   if (values.version) { console.log('0.2.0'); return; }
   if (values.help || !positionals.length) { console.log(HELP); return; }
   const [command, action, id] = positionals;
-  if (!['init', 'doctor', 'chat', 'gateway', 'check', 'demo', 'sessions', 'history', 'skills', 'evolve', 'curator'].includes(command)) {
+  if (!['init', 'doctor', 'chat', 'gateway', 'check', 'demo', 'sessions', 'history', 'skills', 'evolve', 'curator', 'goal'].includes(command)) {
     throw new Error(`Unknown command: ${command}`);
   }
   const settings = settingsFor(values);
@@ -200,8 +204,8 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
     }
     return;
   }
-  const lock = command === 'chat' || command === 'gateway' ? new ProfileLock(settings.home).acquire() : undefined;
-  let store: SessionStore | undefined, gateway: Gateway | undefined, agent: Agent | undefined, maintenance: CuratorScheduler | undefined;
+  const lock = ['chat', 'gateway', 'goal'].includes(command) ? new ProfileLock(settings.home).acquire() : undefined;
+  let store: SessionStore | undefined, gateway: Gateway | undefined, agent: Agent | undefined, maintenance: CuratorScheduler | undefined, goals: GoalRuntime | undefined;
   try {
     initializeProfile(settings);
     store = new SessionStore(resolve(settings.home, 'sessions.db'));
@@ -221,7 +225,9 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       if (!store.listSessions().some(session => session.id === sessionId)) throw new Error('Unknown session ID; run sessions first');
       print(store.loadMessages(sessionId)); return;
     }
-    const provider = createProvider(settings);
+    // /goal status 等管理命令不需要模型；工作回合真正发起时再解析 provider 凭证。
+    let mainProvider: ReturnType<typeof createProvider> | undefined;
+    const provider: ReturnType<typeof createProvider> = { complete: (...args) => (mainProvider ??= createProvider(settings)).complete(...args) };
     const curator = createCurator(settings);
     try { const notification = curator.takeNotification(); if (notification) console.error(`Curator: ${notification}`); }
     catch (error) { console.error(`Curator state: ${String(error)}`); }
@@ -231,14 +237,36 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       activity: maintenance,
       skills: catalogFor(settings), mode: settings.mode, maxSteps: settings.maxSteps, contextChars: settings.contextChars,
       compression: { ...settings.compression, memoryFlush: settings.compressionMemoryFlush },
-      summaryProvider: settings.compression.summaryModel ? createProvider({ ...settings, model: settings.compression.summaryModel }) : undefined,
+      summaryProvider: settings.compression.summaryModel ? { complete: (...args) => createProvider({ ...settings, model: settings.compression.summaryModel! }).complete(...args) } : undefined,
       turnTimeoutMs: settings.turnTimeoutMs, plugins: settings.plugins, autoReflect: settings.autoReflect,
       evolution: new EvolutionManager(resolve(settings.home, 'proposals'), resolve(settings.home, 'skills'), curator.repo),
       emit: values.trace ? traceWriter(settings.home) : undefined });
-    gateway = new Gateway(agent, store, loadAlgorithms(settings.mode).sessionKey,
+    const sessionKey = loadAlgorithms(settings.mode).sessionKey;
+    // Goals 是 Agent 外层的会话控制器；Curator 的空闲调度仍然独立运行。
+    goals = new GoalRuntime(agent, new GoalManager(store, createGoalProvider(settings), {
+      settings: settings.goals, allowGates: command === 'chat' || command === 'goal',
+    }), {
+      cwd: process.cwd(),
+      canRestore: session => {
+        if (command !== 'gateway') return session.key === sessionKey('cli', values.session ?? 'default', values.user ?? 'local');
+        try { const [channel, user] = JSON.parse(session.scope) as string[]; return channel !== 'cli' && (!values['allow-user'] || values['allow-user'].includes(user)); }
+        catch { return false; }
+      },
+      notify: event => {
+        if (command === 'gateway' && (values.connector ?? 'jsonl') === 'jsonl') console.log(JSON.stringify(event));
+        else if (command !== 'gateway' && event.type === 'goal.answer') console.log(`[goal ${event.sessionId}] ${event.text}`);
+        else if (event.type !== 'goal.answer') console.error(`[${event.type} ${event.sessionId}] ${event.text}`);
+      },
+    });
+    gateway = new Gateway(goals, store, sessionKey,
       values['allow-user'] ? new Set(values['allow-user']) : undefined);
-    if (command === 'chat') {
-      await chat(gateway, values, signal, curator); // 答复先打印；正常退出前等待最后一次复盘落盘。
+    goals.start(command === 'gateway' || (command === 'chat' && values.message === undefined));
+    if (command === 'chat' || command === 'goal') {
+      if (values['max-turns'] !== undefined && (command !== 'goal' || !['set', 'draft'].includes(action ?? ''))) throw new Error('--max-turns requires goal set or goal draft');
+      const input = command === 'goal' ? `/goal ${action ?? 'status'} ${values['max-turns'] === undefined ? '' : `--turns ${values['max-turns']} `}${positionals.slice(2).join(' ')}`.trim() : values.message;
+      await chat(gateway, { ...values, message: input }, signal, curator);
+      // 单次 CLI 允许自动推进到 done/paused/wait；交互退出则保留目标状态，下次恢复。
+      if (input !== undefined) await goals.idle(signal);
       await agent.waitForReflections(signal);
       return;
     }
@@ -247,7 +275,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
       const { runJsonl } = await import('./connectors/jsonl.js');
       const stop = () => { process.stdin.destroy(); };
       signal.addEventListener('abort', stop, { once: true });
-      try { await runJsonl(gateway, process.stdin, process.stdout); await agent.waitForReflections(signal); signal.throwIfAborted(); }
+      try { await runJsonl(gateway, process.stdin, process.stdout); await goals.idle(signal); await agent.waitForReflections(signal); signal.throwIfAborted(); }
       finally { signal.removeEventListener('abort', stop); }
     } else if (connector === 'http') {
       const { createHttpServer } = await import('./connectors/http.js');
@@ -267,7 +295,7 @@ async function execute(parsed: Parsed, signal: AbortSignal): Promise<void> {
         if (signal.aborted) stop();
       });
     } else throw new Error('connector must be jsonl or http');
-  } finally { agent?.close(); await maintenance?.close(); gateway?.close(); store?.close(); lock?.release(); }
+  } finally { await goals?.close(signal.aborted); agent?.close(); await maintenance?.close(); gateway?.close(); store?.close(); lock?.release(); }
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {

@@ -23,6 +23,7 @@ export interface ReviewReport {
   model: string; summary: string; error?: string; warnings: string[];
   tool_calls: { call: ToolCall; result: unknown }[]; report_path: string;
 }
+/** Curator 整理整库技能；持续推进用户任务的外层循环在 goals/runtime.ts，两个调度器相互独立。 */
 export class Curator {
   readonly backups: SkillBackups;
   constructor(readonly repo: SkillRepository, readonly provider?: Provider, readonly runtime: { contextChars?: number; timeoutMs?: number; model?: string } = {}) {
@@ -181,7 +182,7 @@ export class Curator {
   }
 }
 
-/** CLI / Gateway 共用：首次 90 秒，之后每小时检查；有前台请求时跳过。 */
+/** CLI 可在启动时立即检查，Gateway 首次 90 秒后检查；之后每小时检查，有前台请求时跳过。 */
 export class CuratorScheduler {
   private active = 0;
   private lastActivity: number;

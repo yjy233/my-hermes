@@ -14,6 +14,7 @@ export * from './gateway/index.js';
 export * from './skills/index.js';
 export * from './plugins/index.js';
 export * from './evolution/index.js';
+export * from './goals/index.js';
 export { loadAlgorithms, type Algorithms, type Mode } from './learning/index.js';
 export { loadSettings, initializeProfile, type Settings } from './config.js';
 export { ProfileLock } from './profile-lock.js';

@@ -28,7 +28,9 @@ export type Verdict = 'continue' | 'done' | 'blocked' | 'wait';
 export interface JudgeResult { verdict: Verdict; reason: string; parseFailed?: boolean; transportFailed?: boolean; wait?: { seconds?: number; pid?: number; session_id?: string } }
 export interface GoalState {
   id: string; session_id: string; session_key: string; scope: string; revision: number;
+  // active 是显式开启的目标模式；paused 保留目标，done 已完成，cleared 已取消。
   goal: string; status: 'active' | 'paused' | 'done' | 'cleared';
+  // 一次完整 Agent.run 算一轮，与 L1 的 maxSteps（单轮模型/工具步数）不同。
   turns_used: number; max_turns: number; created_at: number; last_turn_at?: number;
   last_verdict?: Verdict | 'gate_failed'; last_reason?: string; paused_reason?: string;
   consecutive_parse_failures: number; consecutive_transport_failures: number;
@@ -36,5 +38,6 @@ export interface GoalState {
   // phase 是本项目的恢复游标：一轮结束与裁判完成之间也可能发生进程退出。
   phase: 'run' | 'running' | 'judge' | 'waiting' | 'idle';
   baseline_message_id?: number; last_counted_message_id?: number; pending_response?: string;
+  execution_id?: string;
 }
 export interface GoalDecision { status: GoalState['status'] | null; verdict: string; shouldContinue: boolean; reason: string; prompt?: string }

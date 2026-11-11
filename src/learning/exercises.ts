@@ -22,6 +22,8 @@ import { reflectionBody, reflectionMessages, reviewableTurn, type ReflectionOpti
  * 返回值只有本轮新增的 assistant/tool 消息。
  * 原始的 system/user/历史消息由调用方管理，不能重复放进返回值。
  * 函数也不直接打印文本；外层 Agent 在成功后保存 delta，并展示最后一条消息的 content。
+ * Persistent Goals 的“轮数”在这个函数之外：一次 runLoop 可以包含多次 complete，
+ * 但只有整轮回答落盘后才消耗一次 goal turns_used，见 goals/runtime.ts。
  *
  * @param provider 模型适配器，负责 HTTP 请求和响应转换；本循环不用拼接 API 请求。
  * @param registry 工具注册表，负责提供工具 schema，并按调用名称执行具体工具。

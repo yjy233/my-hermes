@@ -20,7 +20,7 @@ export class KimiProvider implements Provider {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.options.apiKey}` },
           body: JSON.stringify({
             model: this.options.model, messages: messages.map(toWireMessage),
-            reasoning_effort: 'low', max_completion_tokens: 8192, stream: false,
+            reasoning_effort: 'low', max_completion_tokens: this.options.maxTokens, stream: false,
             ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
           }),
         });

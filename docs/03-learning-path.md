@@ -211,4 +211,16 @@ npm run dev -- curator run --dry-run --consolidate --home /tmp/my-hermes-curator
 
 推荐断点顺序：`Curator.due` → `transitions` → `modelReview` → `curatorTools` → `SkillRepository.batch` → `SkillLedger.undo`。先理解确定性维护，再跟踪脚本化模型合并两个技能的测试，最后故意让批处理第二项失败，观察第一项和统计如何被撤回。
 
-Persistent Goals 仍是下一块内容，尚未注册为 L6 验收。它应该在完整主 Agent 回合之外维护目标状态和预算，完成一轮后判断 continue/done/blocked/wait；不能直接把 Curator 的定时器或 L5 的反思循环当作 Goals。
+## 接着读 Persistent Goals
+
+已实现于 `src/goals/` 并接入 CLI/Gateway；没有另设 L6 验收。先读 [机制、命令、状态和恢复](04-memory-and-extensions.md#persistent-goals跨回合推进目标)，再执行：
+
+```bash
+node --import tsx --test tests/goals.test.ts tests/goals-cli.test.ts
+npm run dev -- goal set '/calc (2+3)*4' --max-turns 3 --provider demo --mode reference --home /tmp/my-hermes-goals-study
+npm run dev -- goal status --home /tmp/my-hermes-goals-study
+```
+
+推荐断点：`goalCommand` → `GoalManager.set` → `GoalRuntime.step` → `Agent.run` → `recordTurn` → `evaluateAfterTurn` → `nextPrompt`。观察一轮 `Agent.run` 内可以有多次模型和工具调用，但 `turns_used` 只加一次。最后在 WAIT、故障裁判和重启恢复测试中观察：定时器什么时候只查状态，什么时候才真正调用模型。
+
+L5 提炼经验、Curator 维护技能库、Goals 推进当前目标，三个模块分别有自己的触发条件。

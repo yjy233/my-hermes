@@ -54,6 +54,7 @@ export class Agent {
     }
   }
   async run(key: string, scope: string, text: string, signal?: AbortSignal): Promise<string> {
+    // 一次 run 是一个完整回合。Goals 在外层等待它返回后才验收，不能在每次工具调用后判定总目标。
     if (typeof text !== 'string' || !text.trim() || text.length > 16_000) throw new Error('Message must contain 1..16000 characters');
     return this.mutex.run(key, async () => {
       this.reviews.beginTurn(key);
@@ -165,6 +166,7 @@ export class Agent {
     }
     emit('turn.persisted', { newMessages: delta.length + 1 });
     if (this.options.autoReflect && this.options.evolution) {
+      // L5 另开后台任务提炼经验；目标是否完成由 goals/manager.ts 判定，两者可独立启用。
       const transcript = structuredClone([user, ...delta]);
       const previousUser = history.findLast(row => row.role === 'user' && !row.contextSummary);
       const previousAnswer = history.findLast(row => row.role === 'assistant' && !row.toolCalls?.length && !row.contextSummary);
