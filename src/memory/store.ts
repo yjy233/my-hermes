@@ -165,6 +165,8 @@ export class SessionStore {
       );
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, id);
       CREATE INDEX IF NOT EXISTS sessions_scope ON sessions(scope);
+      -- 与 Hermes 一样，用通用键值元数据保存 goal:<session_id> 的 JSON。
+      CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     // 两条开发线曾给不同格式使用同一个表名。只迁移可明确识别的旧摘要表，
     // 不重写 messages；远端工作上下文表保持原名，摘要代际表使用独立名称。
@@ -442,6 +444,24 @@ export class SessionStore {
       ...sessionFrom(row as unknown as SessionRow),
       createdAt: String(row.created_at), messageCount: Number(row.message_count),
     }));
+  }
+
+  getMeta(key: string): string | null {
+    const row = this.database.prepare('SELECT value FROM state_meta WHERE key=?').get(key);
+    return row ? String(row.value) : null;
+  }
+
+  /** CAS：异步裁判返回时，不能覆盖期间发生的 pause、clear 或新目标。 */
+  compareAndSetMeta(key: string, expected: string | null, value: string): boolean {
+    const result = expected === null
+      ? this.database.prepare('INSERT OR IGNORE INTO state_meta(key,value) VALUES (?,?)').run(key, value)
+      : this.database.prepare('UPDATE state_meta SET value=? WHERE key=? AND value=?').run(value, key, expected);
+    return Number(result.changes) === 1;
+  }
+
+  latestMessage(sessionId: string): HistoryMessage | null {
+    const row = this.database.prepare('SELECT id,payload,created_at FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1').get(sessionId);
+    return row ? { id: Number(row.id), sessionId, message: parseMessage(String(row.payload)), createdAt: String(row.created_at) } : null;
   }
 
   close(): void {
